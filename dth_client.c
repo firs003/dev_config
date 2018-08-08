@@ -136,6 +136,7 @@ enum long_opt_val {
 	LONG_OPT_VAL_TRANS_PROTOCOL = 205,
 	LONG_OPT_VAL_PREV_CMD       = 206,
 	LONG_OPT_VAL_POST_CMD       = 207,
+	LONG_OPT_VAL_SERVER_IP		= 208,
 };
 
 int main(int argc, char const *argv[])
@@ -161,13 +162,14 @@ int main(int argc, char const *argv[])
 		{"port", 		required_argument,	NULL,	'p'},
 		{"md5",			required_argument,	NULL,	'm'},
 		{"localip",		required_argument,	NULL,	LONG_OPT_VAL_LOCAL_IP},
-		{"remoteip",	required_argument,	NULL,	LONG_OPT_VAL_REMOTE_IP},
+		{"serverip",	required_argument,	NULL,	LONG_OPT_VAL_REMOTE_IP},
 		{"localpath",	required_argument,	NULL,	LONG_OPT_VAL_LOCAL_PATH},
 		{"remotepath",	required_argument,	NULL,	LONG_OPT_VAL_REMOTE_PATH},
 		{"transmode",	required_argument,	NULL,	LONG_OPT_VAL_TRANS_MODE},
 		{"transproto",	required_argument,	NULL,	LONG_OPT_VAL_TRANS_PROTOCOL},
 		{"prevcmd",		required_argument,	NULL,	LONG_OPT_VAL_PREV_CMD},
 		{"postcmd",		required_argument,	NULL,	LONG_OPT_VAL_POST_CMD},
+		{"serverip",	required_argument,	NULL,	LONG_OPT_VAL_SERVER_IP},
 
         {0, 0, 0, 0}
     };
@@ -217,7 +219,7 @@ int main(int argc, char const *argv[])
         switch (opt) {
         case 0 :
         	break;
-    	case 'p' :	//May be a bug if -p comes after -b, -b will use default port, sleng 20180720
+    	case 'p' :	//May be a bug if -p comes after -b, -b will use default port, sleng 20180720(do_action mask can solve this issue)
     		port = atoi(optarg);
     	    printf("%s: port = %d\n", __FILE__, port);
     	    break;

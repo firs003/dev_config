@@ -413,6 +413,7 @@ static void *file_trans_thread_func(void *args) {
 	switch (trans_args->up_head->trans_mode) {
 	case FILE_TRANS_MODE_R2L_POSITIVE:
 		do {
+			char back_path[128] = {0, };
 			char tmp_path[128] = {0, };
 			struct in_addr addr;
 			//backup orig file if nessery
@@ -441,8 +442,9 @@ static void *file_trans_thread_func(void *args) {
 			}
 			//exec post cmd
 			//md5 check
-			printf("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
-			if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {
+			memset(local_md5, 0, sizeof(local_md5));
+			// printf("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
+			if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {	//trans_md5 is not all 0x00;
 				char tmp[3] = {0, };
 				char buf[128] = {0, };
 				int i;
@@ -480,31 +482,30 @@ static void *file_trans_thread_func(void *args) {
 				for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
 				printf("\n");
 				if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
-					char back_path[128] = {0, };
 					printf("md5 check success!\n");
-					sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
-					unlink(back_path);
-					if (link(trans_args->up_head->local_path, back_path)) {
-						perror("link1");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-						break;
-					}
-					unlink(trans_args->up_head->local_path);
-					if (link(tmp_path, trans_args->up_head->local_path)) {
-						perror("link2");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-						break;
-					}
-					if (unlink(tmp_path)) {
-						perror("unlink");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-						break;
-					}
 				} else {
 					printf("md5 check failed!\n");
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 					break;
 				}
+			}
+			sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
+			unlink(back_path);
+			if (link(trans_args->up_head->local_path, back_path)) {
+				perror("link1");
+				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+				// break;
+			}
+			unlink(trans_args->up_head->local_path);
+			if (link(tmp_path, trans_args->up_head->local_path)) {
+				perror("link2");
+				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+				break;
+			}
+			if (unlink(tmp_path)) {
+				perror("unlink");
+				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+				break;
 			}
 		} while(0);
 		break;

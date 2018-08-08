@@ -5,9 +5,10 @@ LDFLAGS=-pthread
 
 ARM_TARGET=dth_config_server
 ARM_OBJS=dth_config_server.o
-PC_TARGET=dthc
+PC_TARGET=dth_config_client
 PC_OBJS=dth_client.o
 SHARE_DIR=../../share/
+BIN_FILE=~/bin/dthc
 
 arm:$(ARM_TARGET)
 pc:$(PC_TARGET)
@@ -23,6 +24,8 @@ dth_config_server.o:dth_config_server.c dth_config.h
 
 $(PC_TARGET):$(PC_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
+	@cp $(PC_TARGET) $(BIN_FILE)
+	@echo "cp $(PC_TARGET) to bin_dir"
 
 dth_client.o:dth_client.c dth_config.h
 

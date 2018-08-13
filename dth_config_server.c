@@ -28,6 +28,41 @@ static network_params_t default_net_params = {
 
 int gquit_flag = 0;	//global quit flag
 
+
+/**********************************************************************
+ * function:print info in format like Ultra Edit
+ * input:	buf to print,
+ * 			length to print, 
+ * 			prestr before info, 
+ * 			endstr after info
+ * output:	void
+ **********************************************************************/
+void print_in_hex(void *buf, size_t len, char *pre, char *end) {
+	int i, j, k, row=(len>>4);
+	if (buf == NULL) {
+		printf("params invalid, buf=%p", buf);
+		return;
+	}
+	if (pre) printf("%s:\n", pre);
+	for (i=0, k=0; k<row; ++k) {
+		printf("\t[0%02d0] ", k);
+		for (j=0; j<8; ++j, ++i) printf("%02hhx ", *((unsigned char *)buf+i));
+		printf("  ");
+		for (j=8; j<16; ++j, ++i) printf("%02hhx ", *((unsigned char *)buf+i));
+		printf("\n");
+	}
+	if (len&0xf) {
+		printf("\t[0%02d0] ", k);
+		for (k=0; k<(len&0xf); ++k, ++i) {
+			if (k==4) printf("  ");
+			printf("%02hhx ", *((unsigned char *)buf+i));
+		}
+		printf("\n");
+	}
+	if (end) printf("%s", end);
+	printf("\n");
+}
+
 static void signal_handler(int signo) {
 	switch (signo) {
 	case SIGINT:
@@ -39,35 +74,35 @@ static void signal_handler(int signo) {
 	}
 }
 
-static int network_setmac(network_params_t *params) {
-	struct ifreq ifr;
-	int sockfd;
+// static int network_setmac(network_params_t *params) {
+// 	struct ifreq ifr;
+// 	int sockfd;
 
-	memset(&ifr, 0, sizeof(struct ifreq));
-	if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
-        perror("socket");
-		return -1;
-	}
+// 	memset(&ifr, 0, sizeof(struct ifreq));
+// 	if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
+//         perror("socket");
+// 		return -1;
+// 	}
 
-	//steven 09-27-09, set macAddr
-	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
-		perror("get MAC err\n");
-		close(sockfd);
-		return -1;
-	}
+// 	//steven 09-27-09, set macAddr
+// 	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+// 	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
+// 		perror("get MAC err\n");
+// 		close(sockfd);
+// 		return -1;
+// 	}
 
-	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-	memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
-	if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
-        perror("set macaddr err");
-		close(sockfd);
-		return -1;
-	}
+// 	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+// 	memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
+// 	if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
+//         perror("set macaddr err");
+// 		close(sockfd);
+// 		return -1;
+// 	}
 
-	close(sockfd);
-	return 0;
-}
+// 	close(sockfd);
+// 	return 0;
+// }
 
 static int network_load_params(network_params_t *params, const char *path) {
 	int n, i, err = 0;
@@ -125,7 +160,8 @@ static int network_load_params(network_params_t *params, const char *path) {
 }
 
 static int network_modify(network_params_t *params, const char *file_path) {
-    FILE *fp;
+	int ret = 0;
+    FILE *fp = NULL;
 	struct ifreq ifr;
 	struct rtentry rt;
 	int sockfd;
@@ -134,110 +170,117 @@ static int network_modify(network_params_t *params, const char *file_path) {
 		sin_port:	0
 	};
 
-	if (params->dhcp_flag) {
-		params->ip = params->mask = params->gateway = 0;
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
-
-	if (file_path) {
-	    if ((fp = fopen(file_path, "wb")) == NULL) {
-	        perror("fopen netconf file for write err");
-	    } else {
-	    	if (fwrite(params, 1, sizeof(network_params_t), fp) <= 0) {
-	        	perror("fwrite netconf file err");
-	    	}
-	    	fclose(fp);
-	    }
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
-	if (params->dhcp_flag) {
-		printf("\n\n\n------------------------------------net_cfg.dhcp_flag = %d\n", params->dhcp_flag);
-		system("dhclient");
-//		if (-1 == net_getstatus(params)) {
-//			printf("[E]net_modify get net status error\n");
-//			return -1;
-//		}
-		if (-1 == network_setmac(params)) {
-			printf("[E]net_modify set mac error\n");
-			return -1;
+	do {
+		if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
+			perror("socket");
+			ret = -1;
+			break;
 		}
-		printf("ipAddr=0x%x\n", params->ip);
-		printf("mask=0x%x\n", params->mask);
-		printf("mac=%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx\n\n\n", params->mac[0], params->mac[1], params->mac[2], params->mac[3], params->mac[4], params->mac[5]);
 
-		return 0;
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+		memset(&ifr, 0, sizeof(struct ifreq));
+		//steven 09-27-09, set macAddr
+		strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+		printf("%s:%d ifr_name=%s\n", __FILE__, __LINE__, ifr.ifr_name);
+		if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
+			perror("get MAC err");
+			ret = -1;
+			break;
+		}
+		// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+		memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
+		// print_in_hex(ifr.ifr_ifru.ifru_hwaddr.sa_data, IFHWADDRLEN, "New Mac", NULL);
+		if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
+			perror("set macaddr err");
+			ret = -1;
+			break;
+		}
 
-	memset(&ifr, 0, sizeof(struct ifreq));
-	if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
-        perror("socket");
-		return -1;
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+		if (params->dhcp_flag) {
+			char cmd[64] = {0, };
+			params->ip = params->mask = params->gateway = 0;
+			printf("\n\n\n------------------------------------net_cfg.dhcp_flag = %d\n", params->dhcp_flag);
+			sprintf(cmd, "dhclient %s", params->ifname);
+			if (system(cmd)) {
+				printf("dhclient %s failed!\n", params->ifname);
+				ret = -1;
+				break;
+			}
+	//		if (-1 == net_getstatus(params)) {
+	//			printf("[E]net_modify get net status error\n");
+	//			return -1;
+	//		}
+			// if (-1 == network_setmac(params)) {
+			// 	printf("[E]net_modify set mac error\n");
+			// 	return -1;
+			// }
+			// printf("ipAddr=0x%x\n", params->ip);
+			// printf("mask=0x%x\n", params->mask);
+			// printf("mac=%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx\n\n\n", params->mac[0], params->mac[1], params->mac[2], params->mac[3], params->mac[4], params->mac[5]);
 
-	//steven 09-27-09, set macAddr
-	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
-		perror("get MAC err\n");
-		close(sockfd);
-		return -1;
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+			// return 0;
+		} else {
+			strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 
-	// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-	memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
-	// print_in_hex(ifr.ifr_ifru.ifru_hwaddr.sa_data, IFHWADDRLEN, "New Mac", NULL);
-	if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
-        perror("set macaddr err");
-		close(sockfd);
-		return -1;
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+			//steven 09-27-09, set ipaddr 
+			sa.sin_addr.s_addr = params->ip;
+			// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+			memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
+			if (ioctl(sockfd, SIOCSIFADDR, &ifr) < 0) {
+				perror("set ipaddr err\n");
+				ret = -1;
+				break;
+			}
 
-	//steven 09-27-09, set ipaddr 
-	sa.sin_addr.s_addr = params->ip;
-	// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-	memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
-	if (ioctl(sockfd, SIOCSIFADDR, &ifr) < 0) {
-		close(sockfd);
-		perror("set ipaddr err\n");
-		return -1;
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+			//steven 09-27-09, set mask
+			sa.sin_addr.s_addr = params->mask;
+			// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+			memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
+			if (ioctl(sockfd, SIOCSIFNETMASK, &ifr) < 0) {
+		        perror("set mask err");
+				//return -1;    //sp 12-02-09 cut a bug
+				ret = -1;
+				break;
+			}
 
-	//steven 09-27-09, set mask
-	sa.sin_addr.s_addr = params->mask;
-	// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-	memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
-	if (ioctl(sockfd, SIOCSIFNETMASK, &ifr) < 0) {
-		close(sockfd);
-        perror("set mask err");
-		//return -1;    //sp 12-02-09 cut a bug
-	}
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+			//steven 09-27-09, set gateway Addr
+			// Clean out the RTREQ structure.
+			memset((char *) &rt, 0, sizeof(struct rtentry));
+			// Fill in the other fields.
+			rt.rt_flags = (RTF_UP | RTF_GATEWAY);
+			rt.rt_dst.sa_family = PF_INET;
+			rt.rt_genmask.sa_family = PF_INET;
+			sa.sin_addr.s_addr = params->gateway;
+			memcpy((char *) &rt.rt_gateway, (char *) &sa, sizeof(struct sockaddr));
+			// Tell the kernel to accept this route.
+			if (ioctl(sockfd, SIOCADDRT, &rt) < 0) {
+		        perror("set gateway err");
+				//return -1;    //sp 12-02-09 cut a bug
+				// ret = -1;
+				// break;
+			}
+		}
+		printf("%s:%d\n", __FILE__, __LINE__);
 
-	//steven 09-27-09, set gateway Addr
-	// Clean out the RTREQ structure.
-	memset((char *) &rt, 0, sizeof(struct rtentry));
-	// Fill in the other fields.
-	rt.rt_flags = (RTF_UP | RTF_GATEWAY);
-	rt.rt_dst.sa_family = PF_INET;
-	rt.rt_genmask.sa_family = PF_INET;
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+		if (file_path) {
+		    if ((fp = fopen(file_path, "wb")) == NULL) {
+		        perror("fopen netconf file for write err");
+		        ret = -1;
+		        break;
+		    } else {
+		    	if (fwrite(params, 1, sizeof(network_params_t), fp) <= 0) {
+					perror("fwrite netconf file err"); 
+					ret = -1;
+					break;
+		    	}
+		    }
+		}
+	} while (0);
 
-	sa.sin_addr.s_addr = params->gateway;
-	memcpy((char *) &rt.rt_gateway, (char *) &sa, sizeof(struct sockaddr));
-	// Tell the kernel to accept this route.
-	if (ioctl(sockfd, SIOCADDRT, &rt) < 0) {
-		close(sockfd);
-        perror("set gateway err");
-		//return -1;    //sp 12-02-09 cut a bug
-	}
-	close(sockfd);
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
-
-    return 0;
+	printf("%s:%d\n", __FILE__, __LINE__);
+	if (sockfd > 0) close(sockfd);
+	if (fp) fclose(fp);
+	printf("%s:%d\n", __FILE__, __LINE__);
+    return ret;
 }
 
 #define DTH_CONFIG_SERVER_TMP_IFR_COUNT 32
@@ -315,7 +358,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 			memcpy((char *)&sa, (char *)&ifr.ifr_addr, sizeof(struct sockaddr));
 			param->ip = sa.sin_addr.s_addr;
 
-			//steven 09-27-09, set mask
+			//steven 09-27-09, get mask
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFNETMASK, &ifr) < 0) {
 		        perror("get mask err");
@@ -681,6 +724,31 @@ int main(int argc, char const *argv[])
 						}
 						pthread_mutex_unlock(&send_mutex);
 					}
+				}
+				break;
+			}
+
+			case DTH_REQ_SET_NETWORK_PARAMS: {
+				if (dth_head->length == sizeof(network_params_t)) {
+					network_params_t *params = (network_params_t *)(recvbuf + sizeof(dth_head_t));
+					dth_head = (dth_head_t *)sendbuf;
+					dth_head->sync[0] = 'd';
+					dth_head->sync[1] = 't';
+					dth_head->sync[2] = 'h';
+					dth_head->sync[3] = '\0';
+					dth_head->type = DTH_ACK_SET_NETWORK_PARAMS;
+					dth_head->length = 0;
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+					print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t), NULL, NULL);
+					if (network_modify(params, NETWORK_PARAMS_FILE_PATH)) {
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_ERR;
+					}
+					pthread_mutex_lock(&send_mutex);
+					ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
+					if (ret < 0) {
+						perror("sendto self_report ack failed");
+					}
+					pthread_mutex_unlock(&send_mutex);
 				}
 				break;
 			}

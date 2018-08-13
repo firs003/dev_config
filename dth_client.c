@@ -137,6 +137,11 @@ enum long_opt_val {
 	LONG_OPT_VAL_PREV_CMD       = 206,
 	LONG_OPT_VAL_POST_CMD       = 207,
 	LONG_OPT_VAL_SERVER_IP		= 208,
+	LONG_OPT_VAL_NETSET_IP		= 209,
+	LONG_OPT_VAL_NETSET_MAC		= 210,
+	LONG_OPT_VAL_NETSET_GW		= 211,
+	LONG_OPT_VAL_NETSET_MASK	= 212,
+	LONG_OPT_VAL_NETSET_DHCP	= 213,
 };
 
 int main(int argc, char const *argv[])
@@ -155,7 +160,7 @@ int main(int argc, char const *argv[])
 	unsigned char sendbuf[DTH_CONFIG_CLIENT_SENDBUF_SIZE];
 	unsigned char recvbuf[DTH_CONFIG_CLIENT_RECVBUF_SIZE];
 	unsigned int dest_ip = 0;
-	const char short_options[] = "bu:p:m:";
+	const char short_options[] = "bu:p:m:n:";
     const struct option long_options[] = {
 		{"broadcast",	no_argument,		NULL,	'b'},
 		{"upgrade",		required_argument,	NULL,	'u'},
@@ -170,10 +175,15 @@ int main(int argc, char const *argv[])
 		{"prevcmd",		required_argument,	NULL,	LONG_OPT_VAL_PREV_CMD},
 		{"postcmd",		required_argument,	NULL,	LONG_OPT_VAL_POST_CMD},
 		{"serverip",	required_argument,	NULL,	LONG_OPT_VAL_SERVER_IP},
-
+		{"netset",		required_argument,	NULL,	'n'},
+		{"netset-ip",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_IP},
+		{"netset-mac",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_MAC},
+		{"netset-gw",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_GW},
+		{"netset-mask",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_MASK},
+		{"netset-dhcp",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_DHCP},
         {0, 0, 0, 0}
     };
-    int opt, index, do_upgrade_flag = 0, recvlen, sendlen;
+    int opt, index, do_upgrade_flag = 0, do_netset_flag = 0, recvlen, sendlen;
     upgrade_head_t uphead = {
     	.sync = {'d', 'u', 'f', '\0'},
     	.md5 = {0, },
@@ -335,6 +345,18 @@ int main(int argc, char const *argv[])
         	}
         	break;
         }
+        case 'n' : {
+        	struct in_addr addr;
+        	memset(&addr, 0, sizeof(struct in_addr));
+        	if (inet_aton(optarg, &addr)) {
+        		dest_ip = addr.s_addr;
+        		do_netset_flag = 1;
+        		printf("%s:%d\n", __FILE__, __LINE__);
+        	} else {
+        		perror("inet_aton");
+        	}
+        	break;
+        }
         default :
         	printf("Param(%c) is invalid\n", opt);
         	break;
@@ -380,6 +402,62 @@ int main(int argc, char const *argv[])
 			}
 		}while (0);
     }
+
+	if (do_netset_flag) {
+		do {
+			network_params_t params = {
+				.ifname = {'e', 't', 'h', '1', '\0', },
+				.mac = {0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5},
+			};
+			dth_head_t *dth_head = (dth_head_t *)sendbuf;
+			dth_head->sync[0] = 'd';
+			dth_head->sync[1] = 't';
+			dth_head->sync[2] = 'h';
+			dth_head->sync[3] = '\0';
+			dth_head->type = DTH_REQ_SET_NETWORK_PARAMS;
+			dth_head->length = sizeof(network_params_t);
+			if (1) {
+				struct in_addr addr;
+				// memset(&params, 0, sizeof(params));
+				memset(&addr, 0, sizeof(struct in_addr));
+				inet_aton("192.168.0.221", &addr);
+				params.ip = addr.s_addr;
+				memset(&addr, 0, sizeof(struct in_addr));
+				inet_aton("255.255.255.0", &addr);
+				params.mask = addr.s_addr;
+				memset(&addr, 0, sizeof(struct in_addr));
+				inet_aton("192.168.0.1", &addr);
+				params.gateway = addr.s_addr;
+				// params.ifname = {'e', 't', 'h', '1', '\0', };
+				// params.mac = {0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5};
+				params.up = params.dhcp_flag = 0;
+				memcpy(sendbuf+sizeof(dth_head_t), &params, sizeof(params));
+			}
+			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			if (sendlen <= 0) {
+				perror("sendto");
+				break;
+			}
+
+			dth_head = (dth_head_t *)recvbuf;
+			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			if (recvlen <= 0) {
+				perror("recvfrom");
+				break;
+			}
+			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+
+			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_SET_NETWORK_PARAMS) {
+				printf("Invalid sync head or type\n");
+				break;
+			} else {
+				printf("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
+			}
+		}while (0);
+	}
 
 cleanup:
     if(ucst_sockfd > 0) close(ucst_sockfd);

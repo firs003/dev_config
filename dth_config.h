@@ -31,7 +31,7 @@ typedef enum dth_config_payload_type {
 } dth_payload_type_e;
 
 typedef enum dth_config_ack_value {
-	DTH_CONFIG_ACK_VALUE_UNKNOWN = -1,
+	DTH_CONFIG_ACK_VALUE_ERR = -1,
 	DTH_CONFIG_ACK_VALUE_OK = 0,
 	DTH_CONFIG_ACK_VALUE_NOT_SUPPORT,
 	DTH_CONFIG_ACK_VALUE_ILLEGAL,
@@ -39,6 +39,7 @@ typedef enum dth_config_ack_value {
 	DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED,
 	DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED,
 	DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED,
+	DTH_CONFIG_ACK_VALUE_SET_NETWORK_PARAMS_FAILED,
 } dth_ack_value_e;
 
 typedef struct network_params {

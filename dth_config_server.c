@@ -17,14 +17,14 @@
 #define DTH_CONFIG_SERVER_SENDBUF_SIZE 2048
 #define DTH_CONFIG_SERVER_RECVBUF_SIZE 2048
 
-static network_params_t default_net_params = {
-	.ip        = 0xdf00a8c0,	//192.168.0.223
-	.mask      = 0x00ffffff,	//255.255.255.0
-	.gateway   = 0x0100a8c0,	//192.168.0.1
-	.ifname    = {'e','t','h','0', 0,},
-	.mac       = {0x30,0x0a,0x09,0x11,0xe0,0x40},
-	.dhcp_flag = 0
-};
+// static network_params_t default_net_params = {
+// 	.ip        = 0xdf00a8c0,	//192.168.0.223
+// 	.mask      = 0x00ffffff,	//255.255.255.0
+// 	.gateway   = 0x0100a8c0,	//192.168.0.1
+// 	.ifname    = {'e','t','h','0', 0,},
+// 	.mac       = {0x30,0x0a,0x09,0x11,0xe0,0x40},
+// 	.dhcp_flag = 0
+// };
 
 int gquit_flag = 0;	//global quit flag
 
@@ -105,63 +105,73 @@ static void signal_handler(int signo) {
 // }
 
 static int network_load_params(network_params_t *params, const char *path) {
-	int n, i, err = 0;
-    unsigned char temp = 0;
-    FILE *fp;
+	int n, i, ret = 0;
+	unsigned char temp = 0;
+	FILE *fp = NULL;
 
-    if ((fp = fopen(NETWORK_PARAMS_FILE_PATH, "rb")) == NULL) {
-        printf("fopen netconf file for read err, use default\n");
-		memcpy(params, &default_net_params, sizeof(network_params_t));
-        err = 1;
-    }
+	do {
+		if ((fp = fopen(NETWORK_PARAMS_FILE_PATH, "rb")) == NULL) {
+			printf("fopen netconf file for read error\n");
+			// memcpy(params, &default_net_params, sizeof(network_params_t));
+			ret = -1;
+			break;
+		}
 
-    if (err == 0) {
-        if ((n = fread(params, 1, sizeof(network_params_t), fp)) <= 0) {
-            perror("fread netconf file err");
-            err = 1;
-        }
-        if (n != sizeof(network_params_t)) {
-	        printf("net config file maybe destoryed, use default\n");
-	        err = 1;
-        }
-        fclose(fp);
+		if ((n = fread(params, 1, sizeof(network_params_t), fp)) <= 0) {
+			perror("fread netconf file error");
+			ret = -1;
+			break;
+		}
+		if (n != sizeof(network_params_t)) {
+			printf("net config file maybe destoryed, use default\n");
+			ret = -1;
+			break;
+		}
+		fclose(fp);
 
 		if (params->dhcp_flag) {
 			params->ip = params->mask = params->gateway = 0;
-			err = 0;
+			ret = 0;
 			return 0;
 		}
-        if ((params->ip&params->mask) != (params->gateway&params->mask)) {
-            err = 1;
-        }
-        if (((htonl(params->ip)&0xff000000) == 0) || ((htonl(params->ip)&0xff) == 0xff) || (htonl(params->ip) >= 0xe0000000)) {
-            err = 1;
-        } else if ((params->mask == 0) || (params->mask == 0xffffffff) || ((htonl(params->mask)&0xff000000) == 0)
-                   || ((htonl(params->mask)&0xff0000) == 0) ){//|| ((htonl(params->mask)&0xff00) == 0)) { //linxj2011-06-01
-            err = 1;
-        } else if (((htonl(params->gateway)&0xff000000) == 0) || ((htonl(params->gateway)&0xff) == 0xff)) {
-            err = 1;
-        } else if ((params->ip == params->mask) || (params->ip == params->gateway) || (params->mask == params->gateway)) {
-            err = 1;
-        }
-        for (i=0; i<6; i++)
-            temp |= params->mac[i];
-        if (temp == 0x0) {
-            err = 1;
-        }
-    }
+		if ((params->ip&params->mask) != (params->gateway&params->mask)) {
+			ret = -1;
+			break;
+		}
+		if (((htonl(params->ip)&0xff000000) == 0) || ((htonl(params->ip)&0xff) == 0xff) || (htonl(params->ip) >= 0xe0000000)) {
+			ret = -1;
+			break;
+		} else if ((params->mask == 0) || (params->mask == 0xffffffff) || ((htonl(params->mask)&0xff000000) == 0)
+				   || ((htonl(params->mask)&0xff0000) == 0) ){//|| ((htonl(params->mask)&0xff00) == 0)) { //linxj2011-06-01
+			ret = -1;
+			break;
+		} else if (((htonl(params->gateway)&0xff000000) == 0) || ((htonl(params->gateway)&0xff) == 0xff)) {
+			ret = -1;
+			break;
+		} else if ((params->ip == params->mask) || (params->ip == params->gateway) || (params->mask == params->gateway)) {
+			ret = -1;
+			break;
+		}
+		for (i=0; i<6; i++)
+			temp |= params->mac[i];
+		if (temp == 0x0) {
+			ret = -1;
+			break;
+		}
+	}while (0);
 
-    if (err == 1) {
-		// memcpy(params, &default_net_params, sizeof(network_params_t));
-		*params = default_net_params;
-    }
+	// if (ret == 1) {
+	// 	// memcpy(params, &default_net_params, sizeof(network_params_t));
+	// 	*params = default_net_params;
+	// }
 
-    return 0;
+	if (fp) fclose(fp);
+	return ret;
 }
 
 static int network_modify(network_params_t *params, const char *file_path) {
 	int ret = 0;
-    FILE *fp = NULL;
+	FILE *fp = NULL;
 	struct ifreq ifr;
 	struct rtentry rt;
 	int sockfd;
@@ -236,7 +246,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 			memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
 			if (ioctl(sockfd, SIOCSIFNETMASK, &ifr) < 0) {
-		        perror("set mask err");
+				perror("set mask err");
 				//return -1;    //sp 12-02-09 cut a bug
 				ret = -1;
 				break;
@@ -253,34 +263,34 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			memcpy((char *) &rt.rt_gateway, (char *) &sa, sizeof(struct sockaddr));
 			// Tell the kernel to accept this route.
 			if (ioctl(sockfd, SIOCADDRT, &rt) < 0) {
-		        perror("set gateway err");
+				perror("set gateway err");
 				//return -1;    //sp 12-02-09 cut a bug
 				// ret = -1;
 				// break;
 			}
 		}
-		printf("%s:%d\n", __FILE__, __LINE__);
+		// printf("%s:%d\n", __FILE__, __LINE__);
 
 		if (file_path) {
-		    if ((fp = fopen(file_path, "wb")) == NULL) {
-		        perror("fopen netconf file for write err");
-		        ret = -1;
-		        break;
-		    } else {
-		    	if (fwrite(params, 1, sizeof(network_params_t), fp) <= 0) {
+			if ((fp = fopen(file_path, "wb")) == NULL) {
+				perror("fopen netconf file for write err");
+				ret = -1;
+				break;
+			} else {
+				if (fwrite(params, 1, sizeof(network_params_t), fp) <= 0) {
 					perror("fwrite netconf file err"); 
 					ret = -1;
 					break;
-		    	}
-		    }
+				}
+			}
 		}
 	} while (0);
 
-	printf("%s:%d\n", __FILE__, __LINE__);
+	// printf("%s:%d\n", __FILE__, __LINE__);
 	if (sockfd > 0) close(sockfd);
 	if (fp) fclose(fp);
-	printf("%s:%d\n", __FILE__, __LINE__);
-    return ret;
+	// printf("%s:%d\n", __FILE__, __LINE__);
+	return ret;
 }
 
 #define DTH_CONFIG_SERVER_TMP_IFR_COUNT 32
@@ -332,7 +342,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 		}
 		memset(&ifr, 0, sizeof(struct ifreq));
 		if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-	        perror("socket");
+			perror("socket");
 			ret = -1;
 			break;
 		}
@@ -361,7 +371,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 			//steven 09-27-09, get mask
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFNETMASK, &ifr) < 0) {
-		        perror("get mask err");
+				perror("get mask err");
 				//ret = -1;
 				//break;    //sp 12-02-09 cut a bug
 			}
@@ -398,7 +408,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 			// Tell the kernel to accept this route.
 			if (ioctl(sockfd, SIOCADDRT, &rt) < 0) {
 				close(sockfd);
-		        perror("set gateway err");
+				perror("set gateway err");
 				//return -1;    //sp 12-02-09 cut a bug
 			}
 		*/
@@ -583,48 +593,49 @@ int main(int argc, char const *argv[])
 	pthread_t file_trans_tid;
 	struct file_trans_args trans_args;
 
-    const char short_options[] = "p:";
-    const struct option long_options[] = {
+	const char short_options[] = "p:";
+	const struct option long_options[] = {
 		{"port", required_argument, NULL, 'p'},
-        {0, 0, 0, 0}
-    };
-    int opt, index;
+		{0, 0, 0, 0}
+	};
+	int opt, index;
 
-    signal(SIGINT, signal_handler);
-   	signal(SIGTERM, signal_handler);
+	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
 
-    do {
-    	opt = getopt_long(argc, (char *const *)argv, short_options, long_options, &index);
+	do {
+		opt = getopt_long(argc, (char *const *)argv, short_options, long_options, &index);
 
-        if (opt == -1) {
-            break;
-        }
+		if (opt == -1) {
+			break;
+		}
 
-        switch (opt) {
-        case 0 :
-        	break;
-        case 'p' :
-        	port = atoi(optarg);
-            printf("%s: port = %d\n", __FILE__, port);
-            break;
-        default :
-        	printf("Param(%c) is invalid\n", opt);
-        	break;
-        }
-    } while (1);
+		switch (opt) {
+		case 0 :
+			break;
+		case 'p' :
+			port = atoi(optarg);
+			printf("%s: port = %d\n", __FILE__, port);
+			break;
+		default :
+			printf("Param(%c) is invalid\n", opt);
+			break;
+		}
+	} while (1);
 
-    printf("%s:%d, sizeof(struct ifreq)=%d\n", __FILE__, __LINE__, sizeof(struct ifreq));
+	printf("%s:%d, sizeof(struct ifreq)=%d\n", __FILE__, __LINE__, sizeof(struct ifreq));
 	memset(&netparams, 0, sizeof(network_params_t));
-	ret = network_load_params(&netparams, NETWORK_PARAMS_FILE_PATH);
-	ret = network_modify(&netparams, NULL);
-	printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+	if (network_load_params(&netparams, NETWORK_PARAMS_FILE_PATH) != -1) {
+		ret = network_modify(&netparams, NULL);
+	}
+	// printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
 
 	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (-1 == ucst_sockfd) {
 		perror("socket error");
 		return -1;
 	}
-	printf("%s:%d\n", __FILE__, __LINE__);
+	// printf("%s:%d\n", __FILE__, __LINE__);
 	memset(&local_addr, 0, sizeof(struct sockaddr_in));
 	local_addr.sin_family = AF_INET;
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -634,14 +645,14 @@ int main(int argc, char const *argv[])
 		close(ucst_sockfd);
 	}
 	sockopt = 1;
-	printf("%s:%d\n", __FILE__, __LINE__);
+	// printf("%s:%d\n", __FILE__, __LINE__);
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
 		perror("set setsockopt failed");
 	}
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
-	    perror("setsockopt timeout");
+		perror("setsockopt timeout");
 	}
-	printf("%s:%d\n", __func__, __LINE__);
+	// printf("%s:%d\n", __func__, __LINE__);
 	while (!gquit_flag) {
 		int recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 		// printf("%s:%d\n", __FILE__, __LINE__);
@@ -659,8 +670,8 @@ int main(int argc, char const *argv[])
 				int bcst_sockfd = -1, if_num = get_if_num();
 				do {
 					if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-					    perror("refresh socket");
-					    break;
+						perror("refresh socket");
+						break;
 					}
 					sockopt = 1;
 					if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {

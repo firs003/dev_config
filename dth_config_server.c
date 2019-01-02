@@ -479,7 +479,7 @@ static void *file_trans_thread_func(void *args) {
 			if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP) {
 				sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->local_path), pthread_self());
 				sprintf(cmd, "%s -l %s -r %s -g %s", 
-					"tftp",
+					"busybox tftp",
 					tmp_path,
 					trans_args->up_head->remote_path,
 					inet_ntoa(addr));

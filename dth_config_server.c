@@ -458,6 +458,7 @@ static void *file_trans_thread_func(void *args) {
 	char cmd[256] = {0,};
 	unsigned char local_md5[16] = {0, };
 	int ret = 0;
+	int process_flag = 0;
 	dth_head_t *dth_head = (dth_head_t *)trans_args->sendbuf;
 	pthread_detach(pthread_self());
 
@@ -489,6 +490,17 @@ static void *file_trans_thread_func(void *args) {
 			printf("OK!\n");
 		}
 
+		/* Kill the running process */
+		sprintf(cmd, "ps aux | grep %s | grep -v grep", basename(trans_args->up_head->local_path));
+		ret = system(cmd);
+		sleng_debug("Check the upgrade process, cmd=%s, ret=%d\n", cmd, ret);
+		if (ret == 0) {	/* Upgrade process exist */
+			sprintf(cmd, "busybox killall %s", basename(trans_args->up_head->local_path));
+			ret = system(cmd);
+			sleng_debug("Kill the upgrade process, cmd=%s, ret=%d\n", cmd, ret);
+			process_flag = 1;
+		}
+
 		switch (trans_args->up_head->trans_mode) {
 		case FILE_TRANS_MODE_R2L_POSITIVE:
 			do {
@@ -515,7 +527,7 @@ static void *file_trans_thread_func(void *args) {
 					break;
 				}
 				ret = system(cmd);
-				printf("cmd=%s, system() return %d\n", cmd, ret);
+				printf("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
 				if(ret) {
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
 					break;
@@ -572,7 +584,7 @@ static void *file_trans_thread_func(void *args) {
 				sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
 				unlink(back_path);
 				if (link(trans_args->up_head->local_path, back_path)) {
-					perror("link1");
+					sleng_error("link1");
 					// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					// break;
 				}
@@ -597,7 +609,16 @@ static void *file_trans_thread_func(void *args) {
 			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
 			break;
 		}
+
+		/* Resume the upgraded process */
+		/* TODO, with params */
+		if (process_flag) {
+			sprintf(cmd, "%s%s &", (trans_args->up_head->local_path[0] != '/')? "./": "", trans_args->up_head->local_path);
+			system(cmd);
+			sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
+		}
 	} while (0);
+
 	//send back file trans result
 	pthread_mutex_lock(trans_args->mutex);
 	ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));

@@ -14,8 +14,9 @@
 #include <libgen.h>
 #include <errno.h>
 
-
 #include "dth_config.h"
+#include "sleng_debug.h"
+
 
 #define NETWORK_PARAMS_FILE_PATH "/disthen/config/network.conf"
 #define DTH_CONFIG_SERVER_SENDBUF_SIZE 2048
@@ -494,6 +495,7 @@ static void *file_trans_thread_func(void *args) {
 				char back_path[128] = {0, };
 				char tmp_path[128] = {0, };
 				struct in_addr addr;
+				char x_flag = 0;
 				//backup orig file if nessery
 				//exec prev cmd
 				//file trans
@@ -574,12 +576,15 @@ static void *file_trans_thread_func(void *args) {
 					// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					// break;
 				}
+				x_flag = !access(trans_args->up_head->local_path, X_OK);
+				printf("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
 				unlink(trans_args->up_head->local_path);
 				if (link(tmp_path, trans_args->up_head->local_path)) {
 					perror("link2");
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					break;
 				}
+				if (x_flag) chmod(trans_args->up_head->local_path, 0755);
 				if (unlink(tmp_path)) {
 					perror("unlink");
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
@@ -600,6 +605,7 @@ static void *file_trans_thread_func(void *args) {
 		perror("sendto self_report ack failed");
 	}
 	pthread_mutex_unlock(trans_args->mutex);
+	printf("Upgrade %s!\n", (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
 
 	return (void *)ret;
 }
@@ -797,7 +803,9 @@ int main(int argc, char const *argv[])
 		}
 	}
 
+	printf("Stop dth_config_server...\n");
 	if (ucst_sockfd > 0) close(ucst_sockfd);
 	pthread_mutex_destroy(&send_mutex);
+
 	return 0;
 }

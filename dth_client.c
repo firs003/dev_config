@@ -74,7 +74,7 @@ unsigned int get_local_ip(const char *ifname) {
 			}
 			memset(&ifr, 0, sizeof(struct ifreq));
 			if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-		        perror("socket");
+				perror("socket");
 				ret = -1;
 				break;
 			}
@@ -88,7 +88,7 @@ unsigned int get_local_ip(const char *ifname) {
 
 			printf("%s[%d]:ifr_count=%d\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
 			for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++) {
-				printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
+				// printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 				if (strncmp("lo", ifr_array[i].ifr_name, IFNAMSIZ)) {
 					//steven 09-27-09, get ipaddr 
 					strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
@@ -142,6 +142,8 @@ enum long_opt_val {
 	LONG_OPT_VAL_NETSET_GW		= 211,
 	LONG_OPT_VAL_NETSET_MASK	= 212,
 	LONG_OPT_VAL_NETSET_DHCP	= 213,
+	LONG_OPT_VAL_REBOOT			= 214,
+	LONG_OPT_VAL_POWEROFF		= 215,
 };
 
 int main(int argc, char const *argv[])
@@ -151,6 +153,7 @@ int main(int argc, char const *argv[])
 	 *
 	 * -u upgrade
 	 */
+	int do_netset_flag = 0, do_upgrade_flag = 0, do_reboot_flag = 0, do_poweroff_flag = 0;
 	int ret;
 	unsigned short port = DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT;
 	int ucst_sockfd = -1, sockopt;
@@ -161,8 +164,10 @@ int main(int argc, char const *argv[])
 	unsigned char recvbuf[DTH_CONFIG_CLIENT_RECVBUF_SIZE];
 	unsigned int dest_ip = 0;
 	const char short_options[] = "bu:p:m:n:";
-    const struct option long_options[] = {
+	const struct option long_options[] = {
 		{"broadcast",	no_argument,		NULL,	'b'},
+		{"reboot",		required_argument,	NULL,	LONG_OPT_VAL_REBOOT},
+		{"poweroff",	required_argument,	NULL,	LONG_OPT_VAL_POWEROFF},
 		{"upgrade",		required_argument,	NULL,	'u'},
 		{"port", 		required_argument,	NULL,	'p'},
 		{"md5",			required_argument,	NULL,	'm'},
@@ -181,128 +186,152 @@ int main(int argc, char const *argv[])
 		{"netset-gw",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_GW},
 		{"netset-mask",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_MASK},
 		{"netset-dhcp",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_DHCP},
-        {0, 0, 0, 0}
-    };
-    int opt, index, do_upgrade_flag = 0, do_netset_flag = 0, recvlen, sendlen;
-    upgrade_head_t uphead = {
-    	.sync = {'d', 'u', 'f', '\0'},
-    	.md5 = {0, },
-    	.trans_mode = FILE_TRANS_MODE_R2L_POSITIVE,
-    	.trans_protocol = FILE_TRANS_PROTOCOL_TFTP,
-    	.remote_port = 0,
-    	.remote_ip = get_local_ip(NULL),
-    	.remote_path = {0, },
-    	.local_path = {0, },
-    	.prev_cmd = {0, },
-    	.post_cmd = {0, },
-    };
+		{0, 0, 0, 0}
+	};
+	int opt, index, recvlen, sendlen;
+	upgrade_head_t uphead = {
+		.sync = {'d', 'u', 'f', '\0'},
+		.md5 = {0, },
+		.trans_mode = FILE_TRANS_MODE_R2L_POSITIVE,
+		.trans_protocol = FILE_TRANS_PROTOCOL_TFTP,
+		.remote_port = 0,
+		.remote_ip = get_local_ip(NULL),
+		.remote_path = {0, },
+		.local_path = {0, },
+		.prev_cmd = {0, },
+		.post_cmd = {0, },
+	};
 
-    ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (-1 == ucst_sockfd) {
-    	perror("socket error");
-    	goto cleanup;
-    }
-    memset(&local_addr, 0, sizeof(struct sockaddr_in));
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    local_addr.sin_port = htons(port);
-    if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
-    	printf("unicast bind return %d:%s\n", errno, strerror(errno));
-    	goto cleanup;
-    }
-    sockopt = 1;
-    printf("%s:%d\n", __FILE__, __LINE__);
-    if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
-    	perror("set setsockopt failed");
-    }
-    if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
-        perror("setsockopt timeout");
-    }
+	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (-1 == ucst_sockfd) {
+		perror("socket error");
+		goto cleanup;
+	}
+	memset(&local_addr, 0, sizeof(struct sockaddr_in));
+	local_addr.sin_family = AF_INET;
+	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	local_addr.sin_port = htons(port);
+	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
+		printf("unicast bind return %d:%s\n", errno, strerror(errno));
+		goto cleanup;
+	}
+	sockopt = 1;
+	// printf("%s:%d\n", __FILE__, __LINE__);
+	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
+		perror("set setsockopt failed");
+	}
+	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
+		perror("setsockopt timeout");
+	}
 
-    do {
-    	opt = getopt_long(argc, (char *const *)argv, short_options, long_options, &index);
+	do {
+		opt = getopt_long(argc, (char *const *)argv, short_options, long_options, &index);
 
-        if (opt == -1) {
-            break;
-        }
+		if (opt == -1) {
+			break;
+		}
 
-        switch (opt) {
-        case 0 :
-        	break;
-    	case 'p' :	//May be a bug if -p comes after -b, -b will use default port, sleng 20180720(do_action mask can solve this issue)
-    		port = atoi(optarg);
-    	    printf("%s: port = %d\n", __FILE__, port);
-    	    break;
-        case 'b' : {
-        	int board_count = 0;
-	        struct sockaddr_in bcst_addr;
-	        int bcst_sockfd = -1;
-	        do {
-	        	if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-	        	    perror("refresh socket");
-	        	    break;
-	        	}
-	        	sockopt = 1;
-	        	if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
-	        		perror("set setsockopt failed");
-	        		break;
-	        	}
-	        	dth_head_t *dth_head = (dth_head_t *)sendbuf;
-	        	dth_head->sync[0] = 'd';
-	        	dth_head->sync[1] = 't';
-	        	dth_head->sync[2] = 'h';
-	        	dth_head->sync[3] = '\0';
-	        	dth_head->type = DTH_REQ_REPORT_SELF;
-	        	dth_head->length = 0;
+		switch (opt) {
+		case 0 :
+			break;
+		case LONG_OPT_VAL_REBOOT : {
+			struct in_addr addr;
+			memset(&addr, 0, sizeof(struct in_addr));
+			if (inet_aton(optarg, &addr)) {
+				dest_ip = addr.s_addr;
+				do_reboot_flag = 1;
+				printf("%s:%d\n", __FILE__, __LINE__);
+			} else {
+				perror("inet_aton");
+			}
+			break;
+		}
+		case LONG_OPT_VAL_POWEROFF : {
+			struct in_addr addr;
+			memset(&addr, 0, sizeof(struct in_addr));
+			if (inet_aton(optarg, &addr)) {
+				dest_ip = addr.s_addr;
+				do_poweroff_flag = 1;
+				printf("%s:%d\n", __FILE__, __LINE__);
+			} else {
+				perror("inet_aton");
+			}
+			break;
+		}
+		case 'p' :	//May be a bug if -p comes after -b, -b will use default port, sleng 20180720(do_action mask can solve this issue)
+			port = atoi(optarg);
+			printf("%s: port = %d\n", __FILE__, port);
+			break;
+		case 'b' : {
+			int board_count = 0;
+			struct sockaddr_in bcst_addr;
+			int bcst_sockfd = -1;
+			do {
+				if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+					perror("refresh socket");
+					break;
+				}
+				sockopt = 1;
+				if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
+					perror("set setsockopt failed");
+					break;
+				}
+				dth_head_t *dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type = DTH_REQ_REPORT_SELF;
+				dth_head->length = 0;
 
-	        	memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
-	        	bcst_addr.sin_family = AF_INET;
-	        	bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
-	        	bcst_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
-	        	ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
-	        	if (ret < 0) {
-	        		perror("sendto self_report req failed");
-	        		break;
-	        	}
+				memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
+				bcst_addr.sin_family = AF_INET;
+				bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
+				bcst_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+				ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
+				if (ret < 0) {
+					perror("sendto self_report req failed");
+					break;
+				}
 
-	        	while (1) {
-	        		int i;
-	        		dth_head_t *dth_head = (dth_head_t *)recvbuf;
-	        		network_params_t *param = NULL;
-		        	recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
-		        	if (recvlen <= 0) {
-		        		break;
-		        	}
-		        	print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+				while (1) {
+					int i;
+					dth_head_t *dth_head = (dth_head_t *)recvbuf;
+					network_params_t *param = NULL;
+					recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+					if (recvlen <= 0) {
+						break;
+					}
+					print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-	        		printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
-	        		if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REPORT_SELF) {
-	        			printf("Invalid sync head or type\n");
-	        			continue;
-	        		}
-	        		board_count++;
-	        		param = (network_params_t *)(recvbuf + sizeof(dth_head_t));
-	        		for (i = 0; i < dth_head->length/sizeof(network_params_t); i++) {
-	        			struct in_addr addr;
-	        			memset(&addr, 0, sizeof(struct in_addr));
-	        			printf("Board[%d]:if%d, param@%p\n", board_count, i, param);
-	        			printf("\tifname:%s(%s)\n", param[i].ifname, param[i].up? "up": "down");
-	        			addr.s_addr = param[i].ip;
-	        			printf("\tip:%s\n", inet_ntoa(addr));
-	        			addr.s_addr = param[i].mask;
-	        			printf("\tmask:%s\n", inet_ntoa(addr));
-	        			addr.s_addr = param[i].gateway;
-	        			printf("\tgateway:%s\n", inet_ntoa(addr));
-	        			printf("\tmac:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n", param[i].mac[0], param[i].mac[1], param[i].mac[2], param[i].mac[3], param[i].mac[4], param[i].mac[5]);
-	        			printf("\tdhcp_enable:%d\n", param[i].dhcp_flag);
-	        			printf("\n");
-	        		}
-	        	}
-	        } while(0);
-	        if (bcst_sockfd > 0) close(bcst_sockfd);
-	        break;
-        }
-        case 'u' : {
+					printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+					if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REPORT_SELF) {
+						printf("Invalid sync head or type\n");
+						continue;
+					}
+					board_count++;
+					param = (network_params_t *)(recvbuf + sizeof(dth_head_t));
+					for (i = 0; i < dth_head->length/sizeof(network_params_t); i++) {
+						struct in_addr addr;
+						memset(&addr, 0, sizeof(struct in_addr));
+						printf("Board[%d]:if%d, param@%p\n", board_count, i, param);
+						printf("\tifname:%s(%s)\n", param[i].ifname, param[i].up? "up": "down");
+						addr.s_addr = param[i].ip;
+						printf("\tip:%s\n", inet_ntoa(addr));
+						addr.s_addr = param[i].mask;
+						printf("\tmask:%s\n", inet_ntoa(addr));
+						addr.s_addr = param[i].gateway;
+						printf("\tgateway:%s\n", inet_ntoa(addr));
+						printf("\tmac:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n", param[i].mac[0], param[i].mac[1], param[i].mac[2], param[i].mac[3], param[i].mac[4], param[i].mac[5]);
+						printf("\tdhcp_enable:%d\n", param[i].dhcp_flag);
+						printf("\n");
+					}
+				}
+			} while(0);
+			if (bcst_sockfd > 0) close(bcst_sockfd);
+			break;
+		}
+		case 'u' : {
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
@@ -311,62 +340,134 @@ int main(int argc, char const *argv[])
 			} else {
 				perror("inet_aton");
 			}
-            break;
-        }
-        case LONG_OPT_VAL_LOCAL_PATH :
-        	strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
-        	do_upgrade_flag = 1;
-        	break;
-        case LONG_OPT_VAL_REMOTE_PATH :
-        	strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
-        	do_upgrade_flag = 1;
-        	break;
-        case LONG_OPT_VAL_REMOTE_IP : {
-        	struct in_addr addr;
-        	memset(&addr, 0, sizeof(struct in_addr));
-        	if (inet_aton(optarg, &addr)) {
-	        	uphead.remote_ip = addr.s_addr;
-	        	do_upgrade_flag = 1;
-        	} else {
-        		perror("inet_aton");
-        	}
-        	break;
-        }
-        case 'm' : {
-        	char tmp[3] = {0, };
-        	int i;
-        	if (strlen(optarg) == 32) {
-	        	for (i = 0; i < strlen(optarg); i+=2) {
-	        		tmp[0] = optarg[i];
-	        		tmp[1] = optarg[i+1];
-	        		tmp[2] = '\0';
-	        		uphead.md5[i/2] = atox(tmp);
-	        	}
-        	}
-        	break;
-        }
-        case 'n' : {
-        	struct in_addr addr;
-        	memset(&addr, 0, sizeof(struct in_addr));
-        	if (inet_aton(optarg, &addr)) {
-        		dest_ip = addr.s_addr;
-        		do_netset_flag = 1;
-        		printf("%s:%d\n", __FILE__, __LINE__);
-        	} else {
-        		perror("inet_aton");
-        	}
-        	break;
-        }
-        default :
-        	printf("Param(%c) is invalid\n", opt);
-        	break;
-        }
-    } while (1);
+			break;
+		}
+		case LONG_OPT_VAL_LOCAL_PATH :
+			strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
+			do_upgrade_flag = 1;
+			break;
+		case LONG_OPT_VAL_REMOTE_PATH :
+			strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
+			do_upgrade_flag = 1;
+			break;
+		case LONG_OPT_VAL_REMOTE_IP : {
+			struct in_addr addr;
+			memset(&addr, 0, sizeof(struct in_addr));
+			if (inet_aton(optarg, &addr)) {
+				uphead.remote_ip = addr.s_addr;
+				do_upgrade_flag = 1;
+			} else {
+				perror("inet_aton");
+			}
+			break;
+		}
+		case 'm' : {
+			char tmp[3] = {0, };
+			int i;
+			if (strlen(optarg) == 32) {
+				for (i = 0; i < strlen(optarg); i+=2) {
+					tmp[0] = optarg[i];
+					tmp[1] = optarg[i+1];
+					tmp[2] = '\0';
+					uphead.md5[i/2] = atox(tmp);
+				}
+			}
+			break;
+		}
+		case 'n' : {
+			struct in_addr addr;
+			memset(&addr, 0, sizeof(struct in_addr));
+			if (inet_aton(optarg, &addr)) {
+				dest_ip = addr.s_addr;
+				do_netset_flag = 1;
+				printf("%s:%d\n", __FILE__, __LINE__);
+			} else {
+				perror("inet_aton");
+			}
+			break;
+		}
+		default :
+			printf("Param(%c) is invalid\n", opt);
+			break;
+		}
+	} while (1);
 
-    printf("%s:%d\n", __func__, __LINE__);
+	// printf("%s:%d\n", __func__, __LINE__);
 
-    if (do_upgrade_flag) {
-    	do {
+	if (do_reboot_flag) {
+		do {
+			dth_head_t *dth_head = (dth_head_t *)sendbuf;
+			dth_head->sync[0] = 'd';
+			dth_head->sync[1] = 't';
+			dth_head->sync[2] = 'h';
+			dth_head->sync[3] = '\0';
+			dth_head->type = DTH_REQ_REBOOT;
+			dth_head->length = 0;
+
+			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			if (sendlen <= 0) {
+				perror("sendto");
+				break;
+			}
+
+			dth_head = (dth_head_t *)recvbuf;
+			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			if (recvlen <= 0) {
+				perror("recvfrom");
+				break;
+			}
+			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+
+			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REBOOT) {
+				printf("Invalid sync head or type\n");
+				break;
+			} else {
+				printf("Reboot Success\n");
+			}
+		} while (0);
+	}
+
+	if (do_poweroff_flag) {
+		do {
+			dth_head_t *dth_head = (dth_head_t *)sendbuf;
+			dth_head->sync[0] = 'd';
+			dth_head->sync[1] = 't';
+			dth_head->sync[2] = 'h';
+			dth_head->sync[3] = '\0';
+			dth_head->type = DTH_REQ_POWEROFF;
+			dth_head->length = 0;
+
+			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			if (sendlen <= 0) {
+				perror("sendto");
+				break;
+			}
+
+			dth_head = (dth_head_t *)recvbuf;
+			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			if (recvlen <= 0) {
+				perror("recvfrom");
+				break;
+			}
+			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+
+			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_POWEROFF) {
+				printf("Invalid sync head or type\n");
+				break;
+			} else {
+				printf("Reboot Success\n");
+			}
+		} while (0);
+	}
+
+	if (do_upgrade_flag) {
+		do {
 			dth_head_t *dth_head = (dth_head_t *)sendbuf;
 			dth_head->sync[0] = 'd';
 			dth_head->sync[1] = 't';
@@ -375,7 +476,7 @@ int main(int argc, char const *argv[])
 			dth_head->type = DTH_REQ_FILE_TRANS;
 			dth_head->length = sizeof(upgrade_head_t);
 			memcpy(sendbuf+sizeof(dth_head_t), &uphead, dth_head->length);
-			printf("%s:%d\n", __func__, __LINE__);
+			// printf("%s:%d\n", __func__, __LINE__);
 
 			remote_addr.sin_addr.s_addr = dest_ip;
 			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
@@ -401,7 +502,7 @@ int main(int argc, char const *argv[])
 				printf("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
 			}
 		}while (0);
-    }
+	}
 
 	if (do_netset_flag) {
 		do {
@@ -459,7 +560,8 @@ int main(int argc, char const *argv[])
 		}while (0);
 	}
 
+
 cleanup:
-    if(ucst_sockfd > 0) close(ucst_sockfd);
+	if(ucst_sockfd > 0) close(ucst_sockfd);
 	return 0;
 }

@@ -719,6 +719,44 @@ int main(int argc, char const *argv[])
 			}
 			// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
 			switch (dth_head->type) {
+			case DTH_REQ_REBOOT: {
+				dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type = DTH_ACK_REBOOT;
+				dth_head->length = 0;
+				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+				pthread_mutex_lock(&send_mutex);
+				ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
+				if (ret < 0) {
+					perror("sendto self_report ack failed");
+				}
+				pthread_mutex_unlock(&send_mutex);
+				sleng_debug("Rebooting");
+				system("reboot");
+			}
+
+			case DTH_REQ_POWEROFF: {
+				dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type = DTH_ACK_POWEROFF;
+				dth_head->length = 0;
+				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+				pthread_mutex_lock(&send_mutex);
+				ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
+				if (ret < 0) {
+					perror("sendto self_report ack failed");
+				}
+				pthread_mutex_unlock(&send_mutex);
+				sleng_debug("Poweroff");
+				system("poweroff");
+			}
+
 			case DTH_REQ_REPORT_SELF: {
 				struct sockaddr_in bcst_addr;
 				int bcst_sockfd = -1, if_num = get_if_num();

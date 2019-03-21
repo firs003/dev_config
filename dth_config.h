@@ -52,6 +52,8 @@ typedef struct network_params {
 	unsigned int ip;
 	unsigned int mask;
 	unsigned int gateway;
+	// unsigned int network;
+	unsigned int broadcast;
 	char ifname[26];
 	unsigned char mac[6];
 	short up;

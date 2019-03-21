@@ -18,7 +18,6 @@
 #include "sleng_debug.h"
 
 
-#define NETWORK_PARAMS_FILE_PATH "/disthen/config/network.conf"
 #define DTH_CONFIG_SERVER_SENDBUF_SIZE 2048
 #define DTH_CONFIG_SERVER_RECVBUF_SIZE 2048
 
@@ -68,6 +67,325 @@ void print_in_hex(void *buf, size_t len, char *pre, char *end) {
 	printf("\n");
 }
 
+static void print_net_params(network_params_t *param) {
+	printf("[%s](%s):\t%08x\t%08x\t%08x\t%08x\n", param->ifname, (param->up)? "up": "down", param->ip, param->mask, param->gateway, param->broadcast);
+}
+
+static char *fgets_skip_comment(char *s, int size, FILE *stream) {
+	char *ret;
+	do {
+		ret = fgets(s, size, stream);
+	} while (ret && s[0]=='#');
+	return ret;
+}
+
+
+/**************************************************
+ * System or board layer
+ **************************************************/
+// #define NETWORK_PARAMS_FILE_PATH "/disthen/config/network.conf"
+#define NETWORK_PARAMS_FILE_PATH	"/etc/network/interfaces"
+#define NETWORK_PARAMS_BACKUP_PATH	"/disthen/config/network.back"
+#define NETWORK_PARAMS_DEFAULT_PATH	"/disthen/config/network.conf"
+#define CDHX_IF_AMOUNT	2
+static const char *ifname_list[] = {
+	"eth0",
+	"eth1",
+	"wlan0",
+	"can0",
+	"can1",
+	"sit0",
+	"tun0",
+	"lo"
+};
+
+unsigned int get_gateway(const char *ifname) {
+	FILE *fp;
+	char buf[256]; // 128 is enough for linux
+	char iface[16];
+	unsigned int dest_addr, ret;
+	fp = fopen("/proc/net/route", "r");
+	if (fp == NULL)
+		return -1;
+	/* Skip title line */
+	fgets(buf, sizeof(buf), fp);
+	while (fgets(buf, sizeof(buf), fp)) {
+		if (sscanf(buf, "%s\t%08x\t%08x", iface, &dest_addr, &ret) == 3
+			&& strncmp(ifname, iface, strlen(ifname)) == 0
+			&& ret != 0) {
+			break;
+		}
+	}
+
+	fclose(fp);
+	return ret;
+}
+
+static int load_params_from_file(const char *path, network_params_t *params_array, int array_size) {
+	int ret = 0;
+	FILE *fp = NULL;
+
+	do {
+		int i;
+		char buf[1024] = {0, };
+
+		if (!path || !params_array || array_size != CDHX_IF_AMOUNT) {
+			ret = -1;
+			errno = EINVAL;
+			break;
+		}
+
+		if ((fp = fopen(path, "r")) == NULL) {
+			sleng_error("fopen [%s] error", path);
+			break;
+		}
+
+		/* Skip the fixed header 6 lines */
+		for(i = 0; i < 6; i++) {
+			fgets(buf, sizeof(buf), fp);
+		}
+		sleng_debug("path=%s\n", path);
+
+		memset(params_array, 0, sizeof(network_params_t) * array_size);
+		/* Get eth0 and eth1 config */
+		for(i = 0; i < array_size; i++) {
+			int eth_index;
+			fgets_skip_comment(buf, sizeof(buf), fp);
+			if (sscanf(buf, "auto eth%d", &eth_index) > 0) {
+				char compare[128] = {0, };
+				sprintf(params_array[i].ifname, "eth%d", eth_index);
+				params_array[i].up = 1;
+				fgets_skip_comment(buf, sizeof(buf), fp);
+				strncpy(compare, "iface eth0 inet ", strlen("iface eth0 inet "));
+				if (eth_index == 1) compare[strlen("iface eth")] = '1';
+				if (strncmp(buf, compare, strlen(compare)) == 0) {
+					const char *mode = buf + strlen(compare);
+					if (strncmp(mode, "dhcp", strlen("dhcp")) == 0) {
+						params_array[i].dhcp_flag = 1;
+					} else if (strncmp(mode, "static", strlen("static")) == 0) {
+						do {
+							struct in_addr addr;
+							fgets_skip_comment(buf, sizeof(buf), fp);
+							if (strlen(buf) > 1 && buf[strlen(buf) - 1] == '\n') buf[strlen(buf) - 1] = '\0';
+							memset(&addr, 0, sizeof(struct in_addr));
+							// sleng_debug("buf[%hhx]=%s, len=%d, addr=%s\n", buf[0], buf, strlen(buf), buf + strlen("address "));
+							if (strncmp(buf, "address ", strlen("address ")) == 0 && inet_aton(buf + strlen("address "), &addr)) {
+								params_array[i].ip = addr.s_addr;
+							} else if (strncmp(buf, "netmask ", strlen("netmask ")) == 0 && inet_aton(buf + strlen("netmask "), &addr)) {
+								params_array[i].mask = addr.s_addr;
+							} else if (strncmp(buf, "gateway ", strlen("gateway ")) == 0 && inet_aton(buf + strlen("gateway "), &addr)) {
+								params_array[i].gateway = addr.s_addr;
+							} else if (strncmp(buf, "broadcast ", strlen("broadcast ")) == 0 && inet_aton(buf + strlen("broadcast "), &addr)) {
+								params_array[i].broadcast = addr.s_addr;
+							}
+						} while(buf[0] != '\n' && !feof(fp));
+					}
+				}
+				ret++;
+			}
+		}
+
+		for(i = 0; i < CDHX_IF_AMOUNT; i++) {
+			if (params_array[i].dhcp_flag == 0 && params_array[i].broadcast == 0) params_array[i].broadcast = params_array[i].ip | 0xFF000000;
+		}
+	} while (0);
+
+	if (fp) {
+		fclose(fp);
+		fp = NULL;
+	}
+	return ret;
+}
+
+static int save_params_to_file(const char *path, network_params_t *params_array, int array_size) {
+	int ret = 0;
+	FILE *fp = NULL;
+
+	do {
+		int i;
+		char buf[1024];
+
+		if (!path || !params_array || array_size != CDHX_IF_AMOUNT) {
+			ret = -1;
+			errno = EINVAL;
+			break;
+		}
+
+		if ((fp = fopen(path, "w")) == NULL) {
+			sleng_error("fopen [%s] error", path);
+			break;
+		}
+
+		/* Write the fixed header 5 lines */
+		sprintf(buf, "%s%s%s%s%s%s",
+			"# interfaces(5) file used by ifup(8) and ifdown(8)\n",
+			"# Include files from /etc/network/interfaces.d:\n",
+			"source-directory /etc/network/interfaces.d\n",
+			"auto lo\n",
+			"iface lo inet loopback\n",
+			"\n");
+		if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+			sleng_error("fwrite fixed 6 lines header error");
+			ret = -1;
+			break;
+		}
+
+		for(i = 0; i < array_size; i++) {
+			if (params_array[i].up) {
+				sprintf(buf, "auto eth%d\n", i);
+				if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+					sleng_error("fwrite enable(up) for if[%d] error", i);
+					ret = -1;
+					break;
+				}
+
+				if (params_array[i].dhcp_flag) {
+					sprintf(buf, "iface eth%d inet dhcp\n", i);
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite dhcp for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+				} else {
+					struct in_addr addr;
+
+					sprintf(buf, "iface eth%d inet static\n", i);
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite static for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+
+					addr.s_addr = params_array[i].ip;
+					sprintf(buf, "address %s\n", inet_ntoa(addr));
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite address for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+
+					addr.s_addr = params_array[i].mask;
+					sprintf(buf, "netmask %s\n", inet_ntoa(addr));
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite netmask for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+
+					addr.s_addr = params_array[i].gateway;
+					sprintf(buf, "gateway %s\n", inet_ntoa(addr));
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite gateway for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+
+					addr.s_addr = params_array[i].broadcast;
+					sprintf(buf, "broadcast %s\n", inet_ntoa(addr));
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite broadcast for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+
+					sprintf(buf, "\n");
+					if (fwrite(buf, 1, strlen(buf), fp) == -1) {
+						sleng_error("fwrite \\n for if[%d] error", i);
+						ret = -1;
+						break;
+					}
+				}
+			}
+		}
+	} while (0);
+
+	if (fp) {
+		fclose(fp);
+		fp = NULL;
+	}
+	return ret;
+}
+
+static int check_param_valid(network_params_t *new, network_params_t *old_array, int array_size) {
+	int ret = 1;
+	if (new->dhcp_flag) {
+		new->ip = new->mask = new->gateway = 0;
+	} else {
+		if ((new->ip & new->mask) != (new->gateway & new->mask)) {
+			ret = 0;
+		}
+		if (((htonl(new->ip)&0xff000000) == 0) || ((htonl(new->ip)&0xff) == 0xff)) {
+			ret = 0;
+		} else if ((new->mask == 0) || (new->mask == 0xffffffff) || ((htonl(new->mask) & 0xff000000) == 0)
+				   || ((htonl(new->mask) & 0xff0000) == 0) ){//|| ((htonl(new->mask)&0xff00) == 0)) { //linxj2011-06-01
+			ret = 0;
+		} else if (((htonl(new->gateway)  & 0xff000000) == 0) || ((htonl(new->gateway) & 0xff) == 0xff)) {
+			ret = 0;
+		} else if ((new->ip == new->mask) || (new->ip == new->gateway) || (new->mask == new->gateway)) {
+			ret = 0;
+		}
+		if ((strncmp(new->ifname, old_array[0].ifname, sizeof(new->ifname)) == 0 && (new->ip & new->mask) != (old_array[1].ip & old_array[1].mask))
+		 || (strncmp(new->ifname, old_array[1].ifname, sizeof(new->ifname)) == 0 && (new->ip & new->mask) != (old_array[0].ip & old_array[0].mask))) {
+			ret = 0;
+		}
+	}
+
+	return ret;
+}
+
+static int gen_netconf_file(const char *path, network_params_t *params) {
+	int ret = 0;
+	FILE *fp = NULL;
+
+	do {
+		int i;
+		network_params_t paramv[CDHX_IF_AMOUNT];
+
+		if (!path || !params) {
+			ret = -1;
+			errno = EINVAL;
+			break;
+		}
+
+		for(i = 0; i < CDHX_IF_AMOUNT && strncmp(params->ifname, ifname_list[i], sizeof(params->ifname)); i++);
+		if (i == CDHX_IF_AMOUNT) {
+			ret = -1;
+			errno = EINVAL;
+			break;
+		}
+
+		/* Get params from system config file */
+		if (load_params_from_file(path, paramv, CDHX_IF_AMOUNT) == -1) {
+		// if (load_params_from_file(NETWORK_PARAMS_BACKUP_PATH, paramv, CDHX_IF_AMOUNT) == -1) {
+			sleng_error("load_params_from_file[%s] error", path);
+			ret = -1;
+			break;
+		}
+
+		/* Change the specified param */
+		for(i = 0; i < CDHX_IF_AMOUNT; i++) {
+			print_net_params(paramv + i);
+			if (strncmp(params->ifname, paramv[i].ifname, sizeof(paramv[i].ifname)) == 0) {
+				if (check_param_valid(params, paramv, CDHX_IF_AMOUNT)) paramv[i] = *params;
+			}
+		}
+
+		if (save_params_to_file(path, paramv, CDHX_IF_AMOUNT) == -1) {
+		// if (save_params_to_file(NETWORK_PARAMS_DEFAULT_PATH, paramv, CDHX_IF_AMOUNT) == -1) {
+			sleng_error("save_params_to_file[%s] error", path);
+			ret = -1;
+			break;
+		}
+
+	} while (0);
+
+	if (fp) {
+		fclose(fp);
+		fp = NULL;
+	}
+	return ret;
+}
+
 static void signal_handler(int signo) {
 	switch (signo) {
 	case SIGINT:
@@ -79,35 +397,36 @@ static void signal_handler(int signo) {
 	}
 }
 
-// static int network_setmac(network_params_t *params) {
-// 	struct ifreq ifr;
-// 	int sockfd;
+#if 0
+static int network_setmac(network_params_t *params) {
+	struct ifreq ifr;
+	int sockfd;
 
-// 	memset(&ifr, 0, sizeof(struct ifreq));
-// 	if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
-//         perror("socket");
-// 		return -1;
-// 	}
+	memset(&ifr, 0, sizeof(struct ifreq));
+	if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
+        sleng_error("socket");
+		return -1;
+	}
 
-// 	//steven 09-27-09, set macAddr
-// 	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-// 	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
-// 		perror("get MAC err\n");
-// 		close(sockfd);
-// 		return -1;
-// 	}
+	//steven 09-27-09, set macAddr
+	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
+		sleng_error("get MAC err\n");
+		close(sockfd);
+		return -1;
+	}
 
-// 	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-// 	memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
-// 	if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
-//         perror("set macaddr err");
-// 		close(sockfd);
-// 		return -1;
-// 	}
+	strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
+	memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
+	if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
+        sleng_error("set macaddr err");
+		close(sockfd);
+		return -1;
+	}
 
-// 	close(sockfd);
-// 	return 0;
-// }
+	close(sockfd);
+	return 0;
+}
 
 static int network_load_params(network_params_t *params, const char *path) {
 	int n, i, ret = 0;
@@ -123,7 +442,7 @@ static int network_load_params(network_params_t *params, const char *path) {
 		}
 
 		if ((n = fread(params, 1, sizeof(network_params_t), fp)) <= 0) {
-			perror("fread netconf file error");
+			sleng_error("fread netconf file error");
 			ret = -1;
 			break;
 		}
@@ -173,6 +492,7 @@ static int network_load_params(network_params_t *params, const char *path) {
 	if (fp) fclose(fp);
 	return ret;
 }
+#endif
 
 static int network_modify(network_params_t *params, const char *file_path) {
 	int ret = 0;
@@ -187,7 +507,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 
 	do {
 		if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
-			perror("socket");
+			sleng_error("socket");
 			ret = -1;
 			break;
 		}
@@ -197,7 +517,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 		strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 		printf("%s:%d ifr_name=%s\n", __FILE__, __LINE__, ifr.ifr_name);
 		if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
-			perror("get MAC err");
+			sleng_error("get MAC err");
 			ret = -1;
 			break;
 		}
@@ -205,7 +525,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 		memcpy(ifr.ifr_ifru.ifru_hwaddr.sa_data, params->mac, IFHWADDRLEN);
 		// print_in_hex(ifr.ifr_ifru.ifru_hwaddr.sa_data, IFHWADDRLEN, "New Mac", NULL);
 		if (ioctl(sockfd, SIOCSIFHWADDR, &ifr) < 0) {
-			perror("set macaddr err");
+			sleng_error("set macaddr err");
 			ret = -1;
 			break;
 		}
@@ -233,7 +553,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			// printf("mac=%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx\n\n\n", params->mac[0], params->mac[1], params->mac[2], params->mac[3], params->mac[4], params->mac[5]);
 
 			// return 0;
-		} else {
+		} else {	/* Static IP */
 			strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 
 			//steven 09-27-09, set ipaddr 
@@ -241,7 +561,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 			memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
 			if (ioctl(sockfd, SIOCSIFADDR, &ifr) < 0) {
-				perror("set ipaddr err\n");
+				sleng_error("set ipaddr err\n");
 				ret = -1;
 				break;
 			}
@@ -251,7 +571,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 			memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
 			if (ioctl(sockfd, SIOCSIFNETMASK, &ifr) < 0) {
-				perror("set mask err");
+				sleng_error("set mask err");
 				//return -1;    //sp 12-02-09 cut a bug
 				ret = -1;
 				break;
@@ -267,34 +587,40 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			sa.sin_addr.s_addr = params->gateway;
 			memcpy((char *) &rt.rt_gateway, (char *) &sa, sizeof(struct sockaddr));
 			// Tell the kernel to accept this route.
-			if (ioctl(sockfd, SIOCADDRT, &rt) < 0) {
-				perror("set gateway err");
+			if (ioctl(sockfd, SIOCADDRT, &rt) < 0 && errno != EEXIST) {
+				sleng_error("set gateway err");
 				//return -1;    //sp 12-02-09 cut a bug
 				// ret = -1;
 				// break;
 			}
 		}
-		// printf("%s:%d\n", __FILE__, __LINE__);
 
 		if (file_path) {
+#if 0
 			if ((fp = fopen(file_path, "wb")) == NULL) {
-				perror("fopen netconf file for write err");
+				sleng_error("fopen netconf file for write err");
 				ret = -1;
 				break;
 			} else {
 				if (fwrite(params, 1, sizeof(network_params_t), fp) <= 0) {
-					perror("fwrite netconf file err"); 
+					sleng_error("fwrite netconf file err");
 					ret = -1;
 					break;
 				}
 			}
+#else
+			if (gen_netconf_file(file_path, params) == -1) {
+				sleng_error("gen_netconf_file error");
+				ret = -1;
+				break;
+			}
+#endif
 		}
 	} while (0);
 
-	// printf("%s:%d\n", __FILE__, __LINE__);
 	if (sockfd > 0) close(sockfd);
 	if (fp) fclose(fp);
-	// printf("%s:%d\n", __FILE__, __LINE__);
+
 	return ret;
 }
 
@@ -306,14 +632,14 @@ static int get_if_num(void) {
 	do {
 		ifr_array = calloc(DTH_CONFIG_SERVER_TMP_IFR_COUNT, sizeof(struct ifreq));
 		if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-			perror("socket");
+			sleng_error("socket");
 			ret = -1;
 			break;
 		}
 		ifc.ifc_len = DTH_CONFIG_SERVER_TMP_IFR_COUNT * sizeof(struct ifreq);
 		ifc.ifc_buf = (void *)ifr_array;
 		if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
-			perror("set ipaddr err\n");
+			sleng_error("set ipaddr err\n");
 			ret = -1;
 			break;
 		}
@@ -341,20 +667,20 @@ static int network_getstaus(void *buf, size_t bufsize) {
 		int i;
 		ifr_array = calloc(DTH_CONFIG_SERVER_TMP_IFR_COUNT, sizeof(struct ifreq));
 		if(ifr_array == NULL) {
-			perror("calloc");
+			sleng_error("calloc");
 			ret = -1;
 			break;
 		}
 		memset(&ifr, 0, sizeof(struct ifreq));
 		if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-			perror("socket");
+			sleng_error("socket");
 			ret = -1;
 			break;
 		}
 		ifc.ifc_len = DTH_CONFIG_SERVER_TMP_IFR_COUNT * sizeof(struct ifreq);
 		ifc.ifc_buf = (void *)ifr_array;
 		if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
-			perror("set ipaddr err\n");
+			sleng_error("set ipaddr err\n");
 			ret = -1;
 			break;
 		}
@@ -366,7 +692,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 			//steven 09-27-09, set ipaddr 
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFADDR, &ifr) < 0) {
-				perror("set ipaddr err\n");
+				sleng_error("set ipaddr err\n");
 				ret = -1;
 				break;
 			}
@@ -376,7 +702,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 			//steven 09-27-09, get mask
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFNETMASK, &ifr) < 0) {
-				perror("get mask err");
+				sleng_error("get mask err");
 				//ret = -1;
 				//break;    //sp 12-02-09 cut a bug
 			}
@@ -385,7 +711,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
-				perror("get MAC err\n");
+				sleng_error("get MAC err\n");
 				ret = -1;
 				break;
 			}
@@ -393,13 +719,14 @@ static int network_getstaus(void *buf, size_t bufsize) {
 
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0) {
-				perror("get flags err\n");
+				sleng_error("get flags err\n");
 				ret = -1;
 				break;
 			}
 			param->up = ifr.ifr_flags & IFF_UP;
 
-		/*	//how to get GATEWAY? ls, 2013-02-25
+#if 0
+			//how to get GATEWAY? ls, 2013-02-25
 			//steven 09-27-09, set gateway Addr
 			// Clean out the RTREQ structure.
 			memset((char *) &rt, 0, sizeof(struct rtentry));
@@ -413,10 +740,13 @@ static int network_getstaus(void *buf, size_t bufsize) {
 			// Tell the kernel to accept this route.
 			if (ioctl(sockfd, SIOCADDRT, &rt) < 0) {
 				close(sockfd);
-				perror("set gateway err");
+				sleng_error("set gateway err");
 				//return -1;    //sp 12-02-09 cut a bug
 			}
-		*/
+#else
+			param->gateway = get_gateway(param->ifname);
+			sleng_debug("param[%s]->gateway=%08x\n", param->ifname, param->gateway);
+#endif
 		}
 	} while (0);
 
@@ -467,9 +797,9 @@ static void *file_trans_thread_func(void *args) {
 		dth_head->sync[1] = 't';
 		dth_head->sync[2] = 'h';
 		dth_head->sync[3] = '\0';
-		dth_head->type = DTH_ACK_FILE_TRANS;
-		dth_head->length = 0;
-		dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+		dth_head->type    = DTH_ACK_FILE_TRANS;
+		dth_head->length  = 0;
+		dth_head->res[0]  = DTH_CONFIG_ACK_VALUE_OK;
 
 		if (access(DOWNLOAD_DIR, F_OK)) {
 			printf("make download dir[%s]...", DOWNLOAD_DIR);
@@ -546,7 +876,7 @@ static void *file_trans_thread_func(void *args) {
 					do {
 						fp = popen(cmd, "r");
 						if (fp == NULL) {
-							perror("popen md5sum failed");
+							sleng_error("popen md5sum failed");
 							dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 							break;
 						}
@@ -592,13 +922,13 @@ static void *file_trans_thread_func(void *args) {
 				printf("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
 				unlink(trans_args->up_head->local_path);
 				if (link(tmp_path, trans_args->up_head->local_path)) {
-					perror("link2");
+					sleng_error("link2");
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					break;
 				}
 				if (x_flag) chmod(trans_args->up_head->local_path, 0755);
 				if (unlink(tmp_path)) {
-					perror("unlink");
+					sleng_error("unlink");
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					break;
 				}
@@ -623,7 +953,7 @@ static void *file_trans_thread_func(void *args) {
 	pthread_mutex_lock(trans_args->mutex);
 	ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
 	if (ret < 0) {
-		perror("sendto self_report ack failed");
+		sleng_error("sendto self_report ack failed");
 	}
 	pthread_mutex_unlock(trans_args->mutex);
 	printf("Upgrade %s!\n", (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
@@ -634,7 +964,7 @@ static void *file_trans_thread_func(void *args) {
 int main(int argc, char const *argv[])
 {
 	int ret;
-	network_params_t netparams;
+	// network_params_t netparams;
 	unsigned short port = DTH_CONFIG_BOARD_DEFAULT_UDP_PORT;
 	int ucst_sockfd = -1, sockopt;
 	struct sockaddr_in local_addr, remote_addr;
@@ -678,15 +1008,17 @@ int main(int argc, char const *argv[])
 
 	// printf("%s:%d, sizeof(struct ifreq)=%d\n", __FILE__, __LINE__, sizeof(struct ifreq));
 	printf("Start dth_config_server...\n");
+#if 0	/* Use system to setup network, do NOT use this any more */
 	memset(&netparams, 0, sizeof(network_params_t));
 	if (network_load_params(&netparams, NETWORK_PARAMS_FILE_PATH) != -1) {
 		ret = network_modify(&netparams, NULL);
 	}
 	// printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+#endif
 
 	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (-1 == ucst_sockfd) {
-		perror("socket error");
+		sleng_error("socket error");
 		return -1;
 	}
 	// printf("%s:%d\n", __FILE__, __LINE__);
@@ -695,16 +1027,16 @@ int main(int argc, char const *argv[])
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(port);
 	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
-		perror("unicast socket bind");
+		sleng_error("unicast socket bind");
 		close(ucst_sockfd);
 	}
 	sockopt = 1;
 	// printf("%s:%d\n", __FILE__, __LINE__);
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
-		perror("set setsockopt failed");
+		sleng_error("set setsockopt failed");
 	}
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
-		perror("setsockopt timeout");
+		sleng_error("setsockopt timeout");
 	}
 	// printf("%s:%d\n", __func__, __LINE__);
 	while (!gquit_flag) {
@@ -725,13 +1057,13 @@ int main(int argc, char const *argv[])
 				dth_head->sync[1] = 't';
 				dth_head->sync[2] = 'h';
 				dth_head->sync[3] = '\0';
-				dth_head->type = DTH_ACK_REBOOT;
-				dth_head->length = 0;
+				dth_head->type    = DTH_ACK_REBOOT;
+				dth_head->length  = 0;
 				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 				pthread_mutex_lock(&send_mutex);
 				ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
 				if (ret < 0) {
-					perror("sendto self_report ack failed");
+					sleng_error("sendto self_report ack failed");
 				}
 				pthread_mutex_unlock(&send_mutex);
 				sleng_debug("Rebooting");
@@ -744,13 +1076,13 @@ int main(int argc, char const *argv[])
 				dth_head->sync[1] = 't';
 				dth_head->sync[2] = 'h';
 				dth_head->sync[3] = '\0';
-				dth_head->type = DTH_ACK_POWEROFF;
-				dth_head->length = 0;
+				dth_head->type    = DTH_ACK_POWEROFF;
+				dth_head->length  = 0;
 				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 				pthread_mutex_lock(&send_mutex);
 				ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
 				if (ret < 0) {
-					perror("sendto self_report ack failed");
+					sleng_error("sendto self_report ack failed");
 				}
 				pthread_mutex_unlock(&send_mutex);
 				sleng_debug("Poweroff");
@@ -762,12 +1094,12 @@ int main(int argc, char const *argv[])
 				int bcst_sockfd = -1, if_num = get_if_num();
 				do {
 					if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-						perror("refresh socket");
+						sleng_error("refresh socket");
 						break;
 					}
 					sockopt = 1;
 					if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
-						perror("set setsockopt failed");
+						sleng_error("set setsockopt failed");
 						break;
 					}
 					dth_head = (dth_head_t *)sendbuf;
@@ -775,8 +1107,8 @@ int main(int argc, char const *argv[])
 					dth_head->sync[1] = 't';
 					dth_head->sync[2] = 'h';
 					dth_head->sync[3] = '\0';
-					dth_head->type = DTH_ACK_REPORT_SELF;
-					dth_head->length = sizeof(network_params_t) * if_num;
+					dth_head->type    = DTH_ACK_REPORT_SELF;
+					dth_head->length  = sizeof(network_params_t) * if_num;
 					if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0) {
 						printf("Get working if status failed\n");
 						break;
@@ -789,11 +1121,12 @@ int main(int argc, char const *argv[])
 					pthread_mutex_lock(&send_mutex);
 					ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
-						perror("sendto self_report ack failed");
+						sleng_error("sendto self_report ack failed");
 						pthread_mutex_unlock(&send_mutex);
 						break;
 					}
 					pthread_mutex_unlock(&send_mutex);
+					sleng_debug("sendto return %d\n", ret);
 				} while(0);
 				if (bcst_sockfd > 0) close(bcst_sockfd);
 				break;
@@ -805,25 +1138,25 @@ int main(int argc, char const *argv[])
 					&& recvbuf[sizeof(dth_head_t)+1] == 'u'
 					&& recvbuf[sizeof(dth_head_t)+2] == 'f'
 					&& recvbuf[sizeof(dth_head_t)+3] == '\0') {
-					trans_args.mutex = &send_mutex;
-					trans_args.up_head = (upgrade_head_t *)(recvbuf + sizeof(dth_head_t));
-					trans_args.sendbuf = sendbuf;
-					trans_args.send_sock = ucst_sockfd;
+					trans_args.mutex       = &send_mutex;
+					trans_args.up_head     = (upgrade_head_t *)(recvbuf + sizeof(dth_head_t));
+					trans_args.sendbuf     = sendbuf;
+					trans_args.send_sock   = ucst_sockfd;
 					trans_args.remote_addr = remote_addr;
 					if (pthread_create(&file_trans_tid, NULL, file_trans_thread_func, &trans_args) < 0) {
-						perror("create file_trans_thread failed");
+						sleng_error("create file_trans_thread failed");
 						dth_head = (dth_head_t *)sendbuf;
 						dth_head->sync[0] = 'd';
 						dth_head->sync[1] = 't';
 						dth_head->sync[2] = 'h';
 						dth_head->sync[3] = '\0';
-						dth_head->type = DTH_ACK_FILE_TRANS;
-						dth_head->length = 0;
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_THREAD_FAILED;
+						dth_head->type    = DTH_ACK_FILE_TRANS;
+						dth_head->length  = 0;
+						dth_head->res[0]  = DTH_CONFIG_ACK_VALUE_CREATE_THREAD_FAILED;
 						pthread_mutex_lock(&send_mutex);
 						ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
 						if (ret < 0) {
-							perror("sendto self_report ack failed");
+							sleng_error("sendto self_report ack failed");
 						}
 						pthread_mutex_unlock(&send_mutex);
 					}
@@ -839,9 +1172,9 @@ int main(int argc, char const *argv[])
 					dth_head->sync[1] = 't';
 					dth_head->sync[2] = 'h';
 					dth_head->sync[3] = '\0';
-					dth_head->type = DTH_ACK_SET_NETWORK_PARAMS;
-					dth_head->length = 0;
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+					dth_head->type    = DTH_ACK_SET_NETWORK_PARAMS;
+					dth_head->length  = 0;
+					dth_head->res[0]  = DTH_CONFIG_ACK_VALUE_OK;
 					print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t), NULL, NULL);
 					if (network_modify(params, NETWORK_PARAMS_FILE_PATH)) {
 						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_ERR;
@@ -849,7 +1182,7 @@ int main(int argc, char const *argv[])
 					pthread_mutex_lock(&send_mutex);
 					ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
-						perror("sendto self_report ack failed");
+						sleng_error("sendto self_report ack failed");
 					}
 					pthread_mutex_unlock(&send_mutex);
 				}

@@ -31,17 +31,18 @@
 // };
 
 int gquit_flag = 0;	//global quit flag
+int gdebug_flag = 0;
 
 
 /**********************************************************************
  * function:print info in format like Ultra Edit
  * input:	buf to print,
- * 			length to print, 
- * 			prestr before info, 
+ * 			length to print,
+ * 			prestr before info,
  * 			endstr after info
  * output:	void
  **********************************************************************/
-void print_in_hex(void *buf, size_t len, char *pre, char *end) {
+void print_in_hex(void *buf, ssize_t len, char *pre, char *end) {
 	int i, j, k, row=(len>>4);
 	if (buf == NULL) {
 		printf("params invalid, buf=%p", buf);
@@ -556,7 +557,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 		} else {	/* Static IP */
 			strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 
-			//steven 09-27-09, set ipaddr 
+			//steven 09-27-09, set ipaddr
 			sa.sin_addr.s_addr = params->ip;
 			// strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
 			memcpy((char *) &ifr.ifr_addr, (char *) &sa, sizeof(struct sockaddr));
@@ -588,7 +589,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 			memcpy((char *) &rt.rt_gateway, (char *) &sa, sizeof(struct sockaddr));
 			// Tell the kernel to accept this route.
 			if (ioctl(sockfd, SIOCADDRT, &rt) < 0 && errno != EEXIST) {
-				sleng_error("set gateway err");
+				sleng_error("set route err");
 				//return -1;    //sp 12-02-09 cut a bug
 				// ret = -1;
 				// break;
@@ -651,7 +652,7 @@ static int get_if_num(void) {
 	return ret;
 }
 
-static int network_getstaus(void *buf, size_t bufsize) {
+static int network_getstaus(void *buf, ssize_t bufsize) {
 	int ret = 0;
 	struct ifreq ifr;
 	int sockfd;
@@ -689,7 +690,7 @@ static int network_getstaus(void *buf, size_t bufsize) {
 		for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++, param++) {
 			printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 			strncpy(param->ifname, ifr_array[i].ifr_name, IFNAMSIZ);
-			//steven 09-27-09, set ipaddr 
+			//steven 09-27-09, set ipaddr
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 			if (ioctl(sockfd, SIOCGIFADDR, &ifr) < 0) {
 				sleng_error("set ipaddr err\n");
@@ -976,9 +977,10 @@ int main(int argc, char const *argv[])
 	pthread_t file_trans_tid;
 	struct file_trans_args trans_args;
 
-	const char short_options[] = "p:";
+	const char short_options[] = "p:d";
 	const struct option long_options[] = {
 		{"port", required_argument, NULL, 'p'},
+		{"debug", no_argument, 		NULL, 'd'},
 		{0, 0, 0, 0}
 	};
 	int opt, index;
@@ -999,6 +1001,9 @@ int main(int argc, char const *argv[])
 		case 'p' :
 			port = atoi(optarg);
 			printf("%s: port = %d\n", __FILE__, port);
+			break;
+		case 'd' :
+			gdebug_flag = 1;
 			break;
 		default :
 			printf("Param(%c) is invalid\n", opt);
@@ -1040,13 +1045,22 @@ int main(int argc, char const *argv[])
 	}
 	// printf("%s:%d\n", __func__, __LINE__);
 	while (!gquit_flag) {
-		int recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
-		// printf("%s:%d\n", __FILE__, __LINE__);
-		if (recvlen != -1) {
+		int recvlen;
+
+		recvbuf[0] = recvbuf[1] = recvbuf[2] = recvbuf[3] = 0;	//make sure do NOT use the prev value
+		recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+		if (gdebug_flag && recvlen >= 0) {
+			sleng_debug("recvlen=%d, sizeof(dth_head_t)=%d, buf=\n", recvlen, sizeof(dth_head_t));
+			// if (recvlen >= 0) {
+				print_in_hex(recvbuf, recvlen, NULL, NULL);
+			// }
+		}
+
+		if (recvlen >= sizeof(dth_head_t)) {
 			dth_head_t *dth_head = (dth_head_t *)recvbuf;
-			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if(gdebug_flag) printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0') {
-				printf("bad sync, just drop! dth ... ... ... ...\n");
+				if(gdebug_flag) printf("bad sync, just drop! dth ... ... ... ...\n");
 				continue;
 			}
 			// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
@@ -1102,6 +1116,7 @@ int main(int argc, char const *argv[])
 						sleng_error("set setsockopt failed");
 						break;
 					}
+					memset(sendbuf, 0, sizeof(sendbuf));	//Clean the sendbuf in order to make sure client can parse to string in python
 					dth_head = (dth_head_t *)sendbuf;
 					dth_head->sync[0] = 'd';
 					dth_head->sync[1] = 't';
@@ -1109,16 +1124,20 @@ int main(int argc, char const *argv[])
 					dth_head->sync[3] = '\0';
 					dth_head->type    = DTH_ACK_REPORT_SELF;
 					dth_head->length  = sizeof(network_params_t) * if_num;
+					if(gdebug_flag) sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
+					if(gdebug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
 					if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0) {
 						printf("Get working if status failed\n");
 						break;
 					}
+					if(gdebug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
 
 					memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
 					bcst_addr.sin_family = AF_INET;
 					bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
 					bcst_addr.sin_port = htons(DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT);
 					pthread_mutex_lock(&send_mutex);
+					if(gdebug_flag) print_in_hex(sendbuf, sizeof(dth_head_t)+dth_head->length, "sendbuf=", NULL);
 					ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
 						sleng_error("sendto self_report ack failed");
@@ -1133,7 +1152,7 @@ int main(int argc, char const *argv[])
 			}
 
 			case DTH_REQ_FILE_TRANS: {
-				if (dth_head->length == sizeof(upgrade_head_t) 
+				if (dth_head->length == sizeof(upgrade_head_t)
 					&& recvbuf[sizeof(dth_head_t)+0] == 'd'
 					&& recvbuf[sizeof(dth_head_t)+1] == 'u'
 					&& recvbuf[sizeof(dth_head_t)+2] == 'f'
@@ -1190,7 +1209,7 @@ int main(int argc, char const *argv[])
 			}
 
 			default :
-				printf("Invalid type [%d]\n", dth_head->type);
+				if(gdebug_flag) printf("Invalid type [%d]\n", dth_head->type);
 			}
 		}
 	}

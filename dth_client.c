@@ -7,8 +7,10 @@
 #include <getopt.h>
 #include <errno.h>
 #include <linux/if.h>
+#include <sys/time.h>
 
 #include "dth_config.h"
+#include "sleng_test.h"
 
 #define	DTH_CONFIG_CLIENT_SENDBUF_SIZE	2048
 #define	DTH_CONFIG_CLIENT_RECVBUF_SIZE	2048
@@ -17,12 +19,12 @@
 /**********************************************************************
  * function:print info in format like Ultra Edit
  * input:	buf to print,
- * 			length to print, 
- * 			prestr before info, 
+ * 			length to print,
+ * 			prestr before info,
  * 			endstr after info
  * output:	void
  **********************************************************************/
-void print_in_hex(void *buf, size_t len, char *pre, char *end) {
+void print_in_hex(void *buf, int len, char *pre, char *end) {
 	int i, j, k, row=(len>>4);
 	if (buf == NULL) {
 		printf("params invalid, buf=%p", buf);
@@ -90,7 +92,7 @@ unsigned int get_local_ip(const char *ifname) {
 			for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++) {
 				// printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 				if (strncmp("lo", ifr_array[i].ifr_name, IFNAMSIZ)) {
-					//steven 09-27-09, get ipaddr 
+					//steven 09-27-09, get ipaddr
 					strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
 				}
 			}
@@ -293,6 +295,7 @@ int main(int argc, char const *argv[])
 					perror("sendto self_report req failed");
 					break;
 				}
+				sleng_debug("sendto return %d\n", ret);
 
 				while (1) {
 					int i;
@@ -380,7 +383,6 @@ int main(int argc, char const *argv[])
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
 				do_netset_flag = 1;
-				printf("%s:%d\n", __FILE__, __LINE__);
 			} else {
 				perror("inet_aton");
 			}

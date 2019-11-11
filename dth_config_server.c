@@ -30,8 +30,13 @@
 // 	.dhcp_flag = 0
 // };
 
-int gquit_flag = 0;	//global quit flag
-int gdebug_flag = 0;
+typedef struct static_file_desc
+{
+	unsigned char quit_flag;
+	unsigned char debug_flag;
+} STATIC_FD, *PSTATIC_FD;
+
+STATIC_FD static_fd = {0};
 
 
 /**********************************************************************
@@ -392,7 +397,7 @@ static void signal_handler(int signo) {
 	case SIGINT:
 	case SIGTERM:
 		signal(signo, SIG_DFL);
-		gquit_flag = 1;
+		static_fd.quit_flag = 1;
 	default:
 		signal(signo, SIG_DFL);
 	}
@@ -964,6 +969,7 @@ static void *file_trans_thread_func(void *args) {
 
 int main(int argc, char const *argv[])
 {
+	PSTATIC_FD fd = &static_fd;
 	int ret;
 	// network_params_t netparams;
 	unsigned short port = DTH_CONFIG_BOARD_DEFAULT_UDP_PORT;
@@ -1003,7 +1009,7 @@ int main(int argc, char const *argv[])
 			printf("%s: port = %d\n", __FILE__, port);
 			break;
 		case 'd' :
-			gdebug_flag = 1;
+			fd->debug_flag = 1;
 			break;
 		default :
 			printf("Param(%c) is invalid\n", opt);
@@ -1044,12 +1050,12 @@ int main(int argc, char const *argv[])
 		sleng_error("setsockopt timeout");
 	}
 	// printf("%s:%d\n", __func__, __LINE__);
-	while (!gquit_flag) {
+	while (!fd->quit_flag) {
 		int recvlen;
 
 		recvbuf[0] = recvbuf[1] = recvbuf[2] = recvbuf[3] = 0;	//make sure do NOT use the prev value
 		recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
-		if (gdebug_flag && recvlen >= 0) {
+		if (fd->debug_flag && recvlen >= 0) {
 			sleng_debug("recvlen=%d, sizeof(dth_head_t)=%d, buf=\n", recvlen, sizeof(dth_head_t));
 			// if (recvlen >= 0) {
 				print_in_hex(recvbuf, recvlen, NULL, NULL);
@@ -1058,9 +1064,9 @@ int main(int argc, char const *argv[])
 
 		if (recvlen >= sizeof(dth_head_t)) {
 			dth_head_t *dth_head = (dth_head_t *)recvbuf;
-			if(gdebug_flag) printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if(fd->debug_flag) printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0') {
-				if(gdebug_flag) printf("bad sync, just drop! dth ... ... ... ...\n");
+				if(fd->debug_flag) printf("bad sync, just drop! dth ... ... ... ...\n");
 				continue;
 			}
 			// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
@@ -1124,20 +1130,20 @@ int main(int argc, char const *argv[])
 					dth_head->sync[3] = '\0';
 					dth_head->type    = DTH_ACK_REPORT_SELF;
 					dth_head->length  = sizeof(network_params_t) * if_num;
-					if(gdebug_flag) sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
-					if(gdebug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
+					if(fd->debug_flag) sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
+					if(fd->debug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
 					if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0) {
 						printf("Get working if status failed\n");
 						break;
 					}
-					if(gdebug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
+					if(fd->debug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
 
 					memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
 					bcst_addr.sin_family = AF_INET;
 					bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
 					bcst_addr.sin_port = htons(DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT);
 					pthread_mutex_lock(&send_mutex);
-					if(gdebug_flag) print_in_hex(sendbuf, sizeof(dth_head_t)+dth_head->length, "sendbuf=", NULL);
+					if(fd->debug_flag) print_in_hex(sendbuf, sizeof(dth_head_t)+dth_head->length, "sendbuf=", NULL);
 					ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
 						sleng_error("sendto self_report ack failed");
@@ -1209,7 +1215,7 @@ int main(int argc, char const *argv[])
 			}
 
 			default :
-				if(gdebug_flag) printf("Invalid type [%d]\n", dth_head->type);
+				if(fd->debug_flag) printf("Invalid type [%d]\n", dth_head->type);
 			}
 		}
 	}

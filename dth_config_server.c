@@ -18,8 +18,8 @@
 #include "sleng_debug.h"
 
 
-#define DTH_CONFIG_SERVER_SENDBUF_SIZE 2048
-#define DTH_CONFIG_SERVER_RECVBUF_SIZE 2048
+#define DTH_CONFIG_SERVER_SENDBUF_SIZE 4096
+#define DTH_CONFIG_SERVER_RECVBUF_SIZE 4096
 
 // static network_params_t default_net_params = {
 // 	.ip        = 0xdf00a8c0,	//192.168.0.223
@@ -794,8 +794,12 @@ static void *file_trans_thread_func(void *args) {
 	char cmd[256] = {0,};
 	unsigned char local_md5[16] = {0, };
 	int ret = 0;
-	int process_flag = 0;
+	// int process_flag = 0;
 	dth_head_t *dth_head = (dth_head_t *)trans_args->sendbuf;
+	char back_path[128] = {0, };
+	char tmp_path[128] = {0, };
+	struct in_addr addr;
+	char x_flag = 0;
 	pthread_detach(pthread_self());
 
 	do {
@@ -826,6 +830,7 @@ static void *file_trans_thread_func(void *args) {
 			printf("OK!\n");
 		}
 
+#if 0
 		/* Kill the running process */
 		sprintf(cmd, "ps aux | grep %s | grep -v grep", basename(trans_args->up_head->local_path));
 		ret = system(cmd);
@@ -836,23 +841,129 @@ static void *file_trans_thread_func(void *args) {
 			sleng_debug("Kill the upgrade process, cmd=%s, ret=%d\n", cmd, ret);
 			process_flag = 1;
 		}
+#endif
+
+		sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->local_path), pthread_self());
+		//backup orig file if nessery
+		//exec prev cmd
+		//file trans
 
 		switch (trans_args->up_head->trans_mode) {
+		case FILE_TRANS_MODE_R2L_NEGATIVE:
+		{
+			int listen_fd = -1;
+			struct timeval recv_timeout = {2, 0};
+			struct sockaddr_in address;
+			int val = 1;
+			int client_fd = -1;
+			socklen_t addr_len = sizeof(struct sockaddr_in);
+			int recvlen = -1, writelen = -1;
+			FILE *fp = NULL;
+			unsigned char *recvbuf = NULL;
+
+			do {
+				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
+					recvbuf = (unsigned char *)malloc(DTH_CONFIG_SERVER_RECVBUF_SIZE);
+					if (recvbuf == NULL)
+					{
+						sleng_error("malloc for file recv buf failed");
+						ret = -1;
+						break;
+					}
+
+					if((listen_fd = socket(AF_INET,SOCK_STREAM,0)) == -1){
+						ret = -1;
+						break;
+					}
+
+					memset(&address, 0, sizeof(struct sockaddr_in));
+					address.sin_family = AF_INET;
+					address.sin_addr.s_addr = htonl(INADDR_ANY);
+					address.sin_port = htons(DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+
+					if (setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, (char*)&recv_timeout, sizeof(struct timeval)) < 0) {
+						sleng_error("setsockopt timeout failed");
+						ret = -1;
+						break;
+					}
+
+					if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0 ) {
+						sleng_error("set setsockopt failed");
+						ret = -1;
+						break;
+					}
+
+					if (-1 == bind(listen_fd, (struct sockaddr *)&address, sizeof(address))) {
+						sleng_error("bind failed");
+						ret = -1;
+						break;
+					}
+
+					if (listen(listen_fd, 4) < 0) {
+						sleng_error("listen failed");
+						ret = -1;
+						break;
+					}
+
+					client_fd = accept(listen_fd, (struct sockaddr *)&address, &addr_len);
+					if (client_fd < 0) {
+						sleng_error("accept error");
+						ret = -1;
+						break;
+					}
+
+					if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, (char*)&recv_timeout, sizeof(struct timeval)) < 0) {
+						sleng_error("setsockopt timeout failed");
+						ret = -1;
+						break;
+					}
+
+					fp = fopen(tmp_path, "w");
+					if (fp == NULL)
+					{
+						sleng_error("open [%s] failed", tmp_path);
+						ret = -1;
+						break;
+					}
+
+					do {
+						recvlen = recv(client_fd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0);
+						writelen = fwrite(recvbuf, 1, recvlen, fp);
+						if (recvlen != writelen)
+						{
+							sleng_error("fwrite error, writelen(%d) != recvlen(%d)", writelen, recvlen);
+							ret = -1;
+							break;
+						}
+					} while(recvlen <= 0);
+				}
+			} while(0);
+
+			if (fp)
+			{
+				fclose(fp);
+				fp = NULL;
+			}
+			if (listen_fd > 0)
+			{
+				close(listen_fd);
+				listen_fd = -1;
+			}
+			if (recvbuf)
+			{
+				free(recvbuf);
+				recvbuf = NULL;
+			}
+
+			break;
+		}
+
 		case FILE_TRANS_MODE_R2L_POSITIVE:
 			do {
-				char back_path[128] = {0, };
-				char tmp_path[128] = {0, };
-				struct in_addr addr;
-				char x_flag = 0;
-				//backup orig file if nessery
-				//exec prev cmd
-				//file trans
-
 				memset(&addr, 0, sizeof(struct in_addr));
 				addr.s_addr = trans_args->up_head->remote_ip;
 				//TODO, is FTP cmd like the format of TFTP cmd?
 				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP) {
-					sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->local_path), pthread_self());
 					sprintf(cmd, "%s -l %s -r %s -g %s",
 						"busybox tftp",
 						tmp_path,
@@ -868,76 +979,6 @@ static void *file_trans_thread_func(void *args) {
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
 					break;
 				}
-				//exec post cmd
-				//md5 check
-				memset(local_md5, 0, sizeof(local_md5));
-				// printf("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
-				if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {	//trans_md5 is not all 0x00;
-					char tmp[3] = {0, };
-					char buf[128] = {0, };
-					int i;
-					FILE *fp = NULL;
-					memset(cmd, 0, sizeof(cmd));
-					sprintf(cmd, "md5sum %s", tmp_path);
-					do {
-						fp = popen(cmd, "r");
-						if (fp == NULL) {
-							sleng_error("popen md5sum failed");
-							dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
-							break;
-						}
-						fread(buf, 1, sizeof(buf), fp);
-						printf("buf=%s\n", buf);
-					} while (0);
-					if (fp) pclose(fp);
-
-					for (i = 0; i < 32; i += 2) {
-						tmp[0] = buf[i];
-						tmp[1] = buf[i+1];
-						tmp[2] = '\0';
-						local_md5[i/2] = atox(tmp);
-						// printf("tmp=%s, local_md5[%d]=%02hhx\n", tmp, i/2, local_md5[i/2]);
-					}
-					if (buf[i] != ' ') {
-						printf("local md5sum format error\n");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
-						break;
-					}
-					printf("local_md5 =");
-					for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
-					printf("\n");
-					printf("remote_md5=");
-					for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
-					printf("\n");
-					if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
-						printf("md5 check success!\n");
-					} else {
-						printf("md5 check failed!\n");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
-						break;
-					}
-				}
-				sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
-				unlink(back_path);
-				if (link(trans_args->up_head->local_path, back_path)) {
-					sleng_error("link1");
-					// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-					// break;
-				}
-				x_flag = !access(trans_args->up_head->local_path, X_OK);
-				printf("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
-				unlink(trans_args->up_head->local_path);
-				if (link(tmp_path, trans_args->up_head->local_path)) {
-					sleng_error("link2");
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-					break;
-				}
-				if (x_flag) chmod(trans_args->up_head->local_path, 0755);
-				if (unlink(tmp_path)) {
-					sleng_error("unlink");
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-					break;
-				}
 			} while(0);
 			break;
 
@@ -946,13 +987,101 @@ static void *file_trans_thread_func(void *args) {
 			break;
 		}
 
+		if (ret == -1)
+		{
+			break;
+		}
+
+		//exec post cmd
+		//md5 check
+		memset(local_md5, 0, sizeof(local_md5));
+		// printf("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
+		if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {	//trans_md5 is not all 0x00;
+			char tmp[3] = {0, };
+			char buf[128] = {0, };
+			int i;
+			FILE *fp = NULL;
+			memset(cmd, 0, sizeof(cmd));
+			sprintf(cmd, "md5sum %s", tmp_path);
+			do {
+				fp = popen(cmd, "r");
+				if (fp == NULL) {
+					sleng_error("popen md5sum failed");
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+					break;
+				}
+				fread(buf, 1, sizeof(buf), fp);
+				printf("buf=%s\n", buf);
+			} while (0);
+			if (fp) pclose(fp);
+
+			for (i = 0; i < 32; i += 2) {
+				tmp[0] = buf[i];
+				tmp[1] = buf[i+1];
+				tmp[2] = '\0';
+				local_md5[i/2] = atox(tmp);
+				// printf("tmp=%s, local_md5[%d]=%02hhx\n", tmp, i/2, local_md5[i/2]);
+			}
+			if (buf[i] != ' ') {
+				printf("local md5sum format error\n");
+				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+				break;
+			}
+			printf("local_md5 =");
+			for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
+			printf("\n");
+			printf("remote_md5=");
+			for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
+			printf("\n");
+			if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
+				printf("md5 check success!\n");
+			} else {
+				printf("md5 check failed!\n");
+				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+				break;
+			}
+		}
+
+		/* Backup old file */
+		sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
+		if (access(back_path, F_OK) == 0)
+		{
+			unlink(back_path);
+		}
+		if (access(trans_args->up_head->local_path, F_OK) == 0)
+		{
+			if (link(trans_args->up_head->local_path, back_path)) {
+				sleng_error("link1, %s -> %s", trans_args->up_head->local_path, back_path);
+				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+				// break;
+			}
+			x_flag = !access(trans_args->up_head->local_path, X_OK);
+			printf("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
+			unlink(trans_args->up_head->local_path);
+		}
+
+		/* Copy the new file */
+		if (link(tmp_path, trans_args->up_head->local_path)) {
+			sleng_error("link2, %s -> %s", tmp_path, trans_args->up_head->local_path);
+			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+			break;
+		}
+		if (x_flag) chmod(trans_args->up_head->local_path, 0755);
+		if (unlink(tmp_path)) {
+			sleng_error("unlink");
+			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+			break;
+		}
+
 		/* Resume the upgraded process */
 		/* TODO, with params */
+#if 0
 		if (process_flag) {
 			sprintf(cmd, "%s%s &", (trans_args->up_head->local_path[0] != '/')? "./": "", trans_args->up_head->local_path);
 			system(cmd);
 			sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
 		}
+#endif
 	} while (0);
 
 	//send back file trans result
@@ -962,7 +1091,7 @@ static void *file_trans_thread_func(void *args) {
 		sleng_error("sendto self_report ack failed");
 	}
 	pthread_mutex_unlock(trans_args->mutex);
-	printf("Upgrade %s!\n", (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
+	printf("Upgrade [%s] %s!\n", trans_args->up_head->local_path, (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
 
 	return (void *)ret;
 }

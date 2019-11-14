@@ -88,7 +88,7 @@ unsigned int get_local_ip(const char *ifname) {
 				break;
 			}
 
-			printf("%s[%d]:ifr_count=%d\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
+			printf("%s[%d]:ifr_count=%ld\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
 			for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++) {
 				// printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 				if (strncmp("lo", ifr_array[i].ifr_name, IFNAMSIZ)) {
@@ -129,6 +129,108 @@ static inline unsigned char atox(const char *str) {
 	return (h<<4)|l;
 }
 
+static int _file_transfer(const char *path, const unsigned int dest_ip, const unsigned short dest_port)
+{
+	int ret = 0;
+	FILE *fp = NULL;
+	int client_socket = -1;
+	struct sockaddr_in client_addr, server_addr;
+	unsigned char *sendbuf = NULL;
+	int sendlen, readlen;
+
+	do {
+		if (path == NULL)
+		{
+			errno = EINVAL;
+			ret = -1;
+			break;
+		}
+
+		sendbuf = (unsigned char *)malloc(4096);
+		if (sendbuf == NULL)
+		{
+			sleng_error("malloc for sendbuf for file transfer error");
+			ret = -1;
+			break;
+		}
+
+		client_socket = socket(AF_INET, SOCK_STREAM, 0);
+		if (client_socket < 0)
+		{
+			sleng_error("Create Socket Failed!");
+			ret = -1;
+			break;
+		}
+
+		bzero(&client_addr, sizeof(client_addr));
+		client_addr.sin_family = AF_INET;
+		client_addr.sin_addr.s_addr = htons(INADDR_ANY);
+		client_addr.sin_port = htons(0);
+		//把客户机的socket和客户机的socket地址结构联系起来
+		if (bind(client_socket, (const struct sockaddr *)&client_addr, sizeof(client_addr)))
+		{
+			sleng_error("Client Bind Port Failed!");
+			ret = -1;
+			break;
+		}
+
+		bzero(&server_addr, sizeof(server_addr));
+		server_addr.sin_family = AF_INET;
+		server_addr.sin_addr.s_addr = dest_ip;
+		server_addr.sin_port = htons(dest_port);
+		if ((ret = connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
+		{
+			sleng_error("Can Not Connect To %x : %hu!", server_addr.sin_addr.s_addr, server_addr.sin_port);
+			ret = -1;
+			break;
+		}
+
+		fp = fopen(path, "r");
+		if (fp == NULL)
+		{
+			sleng_error("open [%s] failed", path);
+			ret = -1;
+			break;
+		}
+
+		while (!feof(fp))
+		{
+			readlen = fread(sendbuf, 1, 4096, fp);
+			if (readlen == -1)
+			{
+				sleng_error("fread from send file[%s] error", path);
+				ret = -1;
+				break;
+			}
+			sendlen = send(client_socket, sendbuf, readlen, 0);
+			if (sendlen < readlen)
+			{
+				sleng_error("send error, sendlen(%d) != readlen(%d)", sendlen, readlen);
+				ret = -1;
+				break;
+			}
+		}
+	} while(0);
+
+	if (fp)
+	{
+		fclose(fp);
+		fp = NULL;
+	}
+	if (client_socket > 0)
+	{
+		close(client_socket);
+		client_socket = 0;
+	}
+	if (sendbuf)
+	{
+		free(sendbuf);
+		sendbuf = NULL;
+	}
+
+	return ret;
+}
+
 enum long_opt_val {
 	LONG_OPT_VAL_LOCAL_IP       = 200,
 	LONG_OPT_VAL_REMOTE_IP      = 201,
@@ -165,7 +267,7 @@ int main(int argc, char const *argv[])
 	unsigned char sendbuf[DTH_CONFIG_CLIENT_SENDBUF_SIZE];
 	unsigned char recvbuf[DTH_CONFIG_CLIENT_RECVBUF_SIZE];
 	unsigned int dest_ip = 0;
-	const char short_options[] = "bu:p:m:n:";
+	const char short_options[] = "bu:p:m:n:l:r:";
 	const struct option long_options[] = {
 		{"broadcast",	no_argument,		NULL,	'b'},
 		{"reboot",		required_argument,	NULL,	LONG_OPT_VAL_REBOOT},
@@ -175,8 +277,8 @@ int main(int argc, char const *argv[])
 		{"md5",			required_argument,	NULL,	'm'},
 		{"localip",		required_argument,	NULL,	LONG_OPT_VAL_LOCAL_IP},
 		{"serverip",	required_argument,	NULL,	LONG_OPT_VAL_REMOTE_IP},
-		{"localpath",	required_argument,	NULL,	LONG_OPT_VAL_LOCAL_PATH},
-		{"remotepath",	required_argument,	NULL,	LONG_OPT_VAL_REMOTE_PATH},
+		{"localpath",	required_argument,	NULL,	'l'},
+		{"remotepath",	required_argument,	NULL,	'r'},
 		{"transmode",	required_argument,	NULL,	LONG_OPT_VAL_TRANS_MODE},
 		{"transproto",	required_argument,	NULL,	LONG_OPT_VAL_TRANS_PROTOCOL},
 		{"prevcmd",		required_argument,	NULL,	LONG_OPT_VAL_PREV_CMD},
@@ -345,11 +447,11 @@ int main(int argc, char const *argv[])
 			}
 			break;
 		}
-		case LONG_OPT_VAL_LOCAL_PATH :
+		case 'l' :
 			strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
 			do_upgrade_flag = 1;
 			break;
-		case LONG_OPT_VAL_REMOTE_PATH :
+		case 'r' :
 			strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
 			do_upgrade_flag = 1;
 			break;
@@ -477,6 +579,9 @@ int main(int argc, char const *argv[])
 			dth_head->sync[3] = '\0';
 			dth_head->type = DTH_REQ_FILE_TRANS;
 			dth_head->length = sizeof(upgrade_head_t);
+
+			uphead.trans_mode = FILE_TRANS_MODE_R2L_NEGATIVE;
+			uphead.trans_protocol = FILE_TRANS_PROTOCOL_USER;
 			memcpy(sendbuf+sizeof(dth_head_t), &uphead, dth_head->length);
 			// printf("%s:%d\n", __func__, __LINE__);
 
@@ -488,6 +593,13 @@ int main(int argc, char const *argv[])
 				break;
 			}
 
+			/* Transfer file to board via custom tcp protocol */
+			if (uphead.trans_mode == FILE_TRANS_MODE_R2L_NEGATIVE && uphead.trans_protocol == FILE_TRANS_PROTOCOL_USER)
+			{
+				sleep(1);
+				_file_transfer(uphead.local_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+			}
+
 			dth_head = (dth_head_t *)recvbuf;
 			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
@@ -495,6 +607,8 @@ int main(int argc, char const *argv[])
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+
+
 
 			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_FILE_TRANS) {

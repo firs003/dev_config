@@ -10,12 +10,14 @@
 #include <sys/time.h>
 
 #include "dth_config.h"
-#include "sleng_test.h"
+#include "dth_util.h"
+#include "sleng_debug.h"
 
 #define	DTH_CONFIG_CLIENT_SENDBUF_SIZE	2048
 #define	DTH_CONFIG_CLIENT_RECVBUF_SIZE	2048
 
 
+#if 0
 /**********************************************************************
  * function:print info in format like Ultra Edit
  * input:	buf to print,
@@ -49,6 +51,26 @@ void print_in_hex(void *buf, int len, char *pre, char *end) {
 	if (end) printf("%s", end);
 	printf("\n");
 }
+
+static inline unsigned char atox(const char *str) {
+	unsigned char low, high, l, h;
+	low = (strlen(str) == 1)? str[0]: str[1];
+	high = (strlen(str) == 1)? '0': str[0];
+	if (low >= '0' && low <= '9') {
+		l = low - '0';
+	} else if (low >= 'a' && low <= 'f') {
+		l = low - 'a' + 10;
+	}
+	if (high >= '0' && high <= '9') {
+		h = high - '0';
+	} else if (high >= 'a' && high <= 'f') {
+		h = high - 'a' + 10;
+	}
+	// printf("h=%hhx, h<<8=%hhx, hl=%hhx\n", h, (h<<4), (h<<4)|l);
+	return (h<<4)|l;
+}
+
+#endif
 
 #define DTH_CONFIG_SERVER_TMP_IFR_COUNT 8
 
@@ -111,24 +133,6 @@ unsigned int get_local_ip(const char *ifname) {
 	return ret;
 }
 
-static inline unsigned char atox(const char *str) {
-	unsigned char low, high, l, h;
-	low = (strlen(str) == 1)? str[0]: str[1];
-	high = (strlen(str) == 1)? '0': str[0];
-	if (low >= '0' && low <= '9') {
-		l = low - '0';
-	} else if (low >= 'a' && low <= 'f') {
-		l = low - 'a' + 10;
-	}
-	if (high >= '0' && high <= '9') {
-		h = high - '0';
-	} else if (high >= 'a' && high <= 'f') {
-		h = high - 'a' + 10;
-	}
-	// printf("h=%hhx, h<<8=%hhx, hl=%hhx\n", h, (h<<4), (h<<4)|l);
-	return (h<<4)|l;
-}
-
 static int _file_transfer(const char *path, const unsigned int dest_ip, const unsigned short dest_port)
 {
 	int ret = 0;
@@ -180,7 +184,7 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 		server_addr.sin_port = htons(dest_port);
 		if ((ret = connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
 		{
-			sleng_error("Can Not Connect To %x : %hu!", server_addr.sin_addr.s_addr, server_addr.sin_port);
+			sleng_error("Can Not Connect To %x : %hu!", server_addr.sin_addr.s_addr, dest_port);
 			ret = -1;
 			break;
 		}
@@ -209,6 +213,7 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 				ret = -1;
 				break;
 			}
+			sleng_debug("sendlen=%d, read_len=%d\n", sendlen, readlen);
 		}
 	} while(0);
 
@@ -577,13 +582,16 @@ int main(int argc, char const *argv[])
 			dth_head->sync[1] = 't';
 			dth_head->sync[2] = 'h';
 			dth_head->sync[3] = '\0';
-			dth_head->type = DTH_REQ_FILE_TRANS;
-			dth_head->length = sizeof(upgrade_head_t);
+			dth_head->type    = DTH_REQ_FILE_TRANS;
+			dth_head->length  = sizeof(upgrade_head_t);
 
-			uphead.trans_mode = FILE_TRANS_MODE_R2L_NEGATIVE;
+			uphead.trans_mode     = FILE_TRANS_MODE_R2L_NEGATIVE;
 			uphead.trans_protocol = FILE_TRANS_PROTOCOL_USER;
+			uphead.file_type      = FILE_TYPE_BIN;
+			uphead.file_size      = get_file_size(uphead.remote_path);
+			get_md5sum(uphead.remote_path, uphead.md5, sizeof(uphead.md5));
 			memcpy(sendbuf+sizeof(dth_head_t), &uphead, dth_head->length);
-			// printf("%s:%d\n", __func__, __LINE__);
+			// sleng_debug("length=%lu\n", sizeof(upgrade_head_t));
 
 			remote_addr.sin_addr.s_addr = dest_ip;
 			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
@@ -597,7 +605,7 @@ int main(int argc, char const *argv[])
 			if (uphead.trans_mode == FILE_TRANS_MODE_R2L_NEGATIVE && uphead.trans_protocol == FILE_TRANS_PROTOCOL_USER)
 			{
 				sleep(1);
-				_file_transfer(uphead.local_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+				_file_transfer(uphead.remote_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
 			}
 
 			dth_head = (dth_head_t *)recvbuf;

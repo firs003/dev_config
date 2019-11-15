@@ -15,6 +15,7 @@
 #include <errno.h>
 
 #include "dth_config.h"
+#include "dth_util.h"
 #include "sleng_debug.h"
 
 
@@ -39,42 +40,9 @@ typedef struct static_file_desc
 STATIC_FD static_fd = {0};
 
 
-/**********************************************************************
- * function:print info in format like Ultra Edit
- * input:	buf to print,
- * 			length to print,
- * 			prestr before info,
- * 			endstr after info
- * output:	void
- **********************************************************************/
-void print_in_hex(void *buf, ssize_t len, char *pre, char *end) {
-	int i, j, k, row=(len>>4);
-	if (buf == NULL) {
-		printf("params invalid, buf=%p", buf);
-		return;
-	}
-	if (pre) printf("%s:\n", pre);
-	for (i=0, k=0; k<row; ++k) {
-		printf("\t[0%02d0] ", k);
-		for (j=0; j<8; ++j, ++i) printf("%02hhx ", *((unsigned char *)buf+i));
-		printf("  ");
-		for (j=8; j<16; ++j, ++i) printf("%02hhx ", *((unsigned char *)buf+i));
-		printf("\n");
-	}
-	if (len&0xf) {
-		printf("\t[0%02d0] ", k);
-		for (k=0; k<(len&0xf); ++k, ++i) {
-			if (k==4) printf("  ");
-			printf("%02hhx ", *((unsigned char *)buf+i));
-		}
-		printf("\n");
-	}
-	if (end) printf("%s", end);
-	printf("\n");
-}
 
 static void print_net_params(network_params_t *param) {
-	printf("[%s](%s):\t%08x\t%08x\t%08x\t%08x\n", param->ifname, (param->up)? "up": "down", param->ip, param->mask, param->gateway, param->broadcast);
+	sleng_debug("[%s](%s):\t%08x\t%08x\t%08x\t%08x\n", param->ifname, (param->up)? "up": "down", param->ip, param->mask, param->gateway, param->broadcast);
 }
 
 static char *fgets_skip_comment(char *s, int size, FILE *stream) {
@@ -441,7 +409,7 @@ static int network_load_params(network_params_t *params, const char *path) {
 
 	do {
 		if ((fp = fopen(NETWORK_PARAMS_FILE_PATH, "rb")) == NULL) {
-			printf("fopen netconf file for read error\n");
+			sleng_debug("fopen netconf file for read error\n");
 			// memcpy(params, &default_net_params, sizeof(network_params_t));
 			ret = -1;
 			break;
@@ -453,7 +421,7 @@ static int network_load_params(network_params_t *params, const char *path) {
 			break;
 		}
 		if (n != sizeof(network_params_t)) {
-			printf("net config file maybe destoryed, use default\n");
+			sleng_debug("net config file maybe destoryed, use default\n");
 			ret = -1;
 			break;
 		}
@@ -521,7 +489,7 @@ static int network_modify(network_params_t *params, const char *file_path) {
 		memset(&ifr, 0, sizeof(struct ifreq));
 		//steven 09-27-09, set macAddr
 		strncpy(ifr.ifr_name, params->ifname, IFNAMSIZ);
-		printf("%s:%d ifr_name=%s\n", __FILE__, __LINE__, ifr.ifr_name);
+		sleng_debug("%s:%d ifr_name=%s\n", __FILE__, __LINE__, ifr.ifr_name);
 		if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
 			sleng_error("get MAC err");
 			ret = -1;
@@ -539,24 +507,24 @@ static int network_modify(network_params_t *params, const char *file_path) {
 		if (params->dhcp_flag) {
 			char cmd[64] = {0, };
 			params->ip = params->mask = params->gateway = 0;
-			printf("\n\n\n------------------------------------net_cfg.dhcp_flag = %d\n", params->dhcp_flag);
+			sleng_debug("\n\n\n------------------------------------net_cfg.dhcp_flag = %d\n", params->dhcp_flag);
 			sprintf(cmd, "dhclient %s", params->ifname);
 			if (system(cmd)) {
-				printf("dhclient %s failed!\n", params->ifname);
+				sleng_debug("dhclient %s failed!\n", params->ifname);
 				ret = -1;
 				break;
 			}
 	//		if (-1 == net_getstatus(params)) {
-	//			printf("[E]net_modify get net status error\n");
+	//			sleng_debug("[E]net_modify get net status error\n");
 	//			return -1;
 	//		}
 			// if (-1 == network_setmac(params)) {
-			// 	printf("[E]net_modify set mac error\n");
+			// 	sleng_debug("[E]net_modify set mac error\n");
 			// 	return -1;
 			// }
-			// printf("ipAddr=0x%x\n", params->ip);
-			// printf("mask=0x%x\n", params->mask);
-			// printf("mac=%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx\n\n\n", params->mac[0], params->mac[1], params->mac[2], params->mac[3], params->mac[4], params->mac[5]);
+			// sleng_debug("ipAddr=0x%x\n", params->ip);
+			// sleng_debug("mask=0x%x\n", params->mask);
+			// sleng_debug("mac=%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx\n\n\n", params->mac[0], params->mac[1], params->mac[2], params->mac[3], params->mac[4], params->mac[5]);
 
 			// return 0;
 		} else {	/* Static IP */
@@ -691,9 +659,9 @@ static int network_getstaus(void *buf, ssize_t bufsize) {
 			break;
 		}
 
-		printf("%s[%d]:ifr_count=%d\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
+		sleng_debug("%s[%d]:ifr_count=%d\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
 		for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++, param++) {
-			printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
+			sleng_debug("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 			strncpy(param->ifname, ifr_array[i].ifr_name, IFNAMSIZ);
 			//steven 09-27-09, set ipaddr
 			strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
@@ -769,27 +737,11 @@ struct file_trans_args {
 	struct sockaddr_in remote_addr;
 } file_trans_args_t;
 
-static inline unsigned char atox(const char *str) {
-	unsigned char low, high, l, h;
-	low = (strlen(str) == 1)? str[0]: str[1];
-	high = (strlen(str) == 1)? '0': str[0];
-	if (low >= '0' && low <= '9') {
-		l = low - '0';
-	} else if (low >= 'a' && low <= 'f') {
-		l = low - 'a' + 10;
-	}
-	if (high >= '0' && high <= '9') {
-		h = high - '0';
-	} else if (high >= 'a' && high <= 'f') {
-		h = high - 'a' + 10;
-	}
-	return (h<<4)|l;
-}
-
 #define DOWNLOAD_DIR "/disthen/download"
 #define BACKUP_DIR "/disthen/backup"
 
 static void *file_trans_thread_func(void *args) {
+	PSTATIC_FD fd = &static_fd;
 	struct file_trans_args *trans_args = (struct file_trans_args *)args;
 	char cmd[256] = {0,};
 	unsigned char local_md5[16] = {0, };
@@ -812,22 +764,22 @@ static void *file_trans_thread_func(void *args) {
 		dth_head->res[0]  = DTH_CONFIG_ACK_VALUE_OK;
 
 		if (access(DOWNLOAD_DIR, F_OK)) {
-			printf("make download dir[%s]...", DOWNLOAD_DIR);
+			sleng_debug("make download dir[%s]...", DOWNLOAD_DIR);
 			if (mkdir(DOWNLOAD_DIR, 0755)) {
-				printf("failed! %s\n", strerror(errno));
+				sleng_debug("failed! %s\n", strerror(errno));
 				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 				break;
 			}
-			printf("OK!\n");
+			sleng_debug("OK!\n");
 		}
 		if (access(BACKUP_DIR, F_OK)) {
-			printf("make backup dir[%s]...", BACKUP_DIR);
+			sleng_debug("make backup dir[%s]...", BACKUP_DIR);
 			if (mkdir(BACKUP_DIR, 0755)) {
-				printf("failed! %s\n", strerror(errno));
+				sleng_debug("failed! %s\n", strerror(errno));
 				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 				break;
 			}
-			printf("OK!\n");
+			sleng_debug("OK!\n");
 		}
 
 #if 0
@@ -860,6 +812,7 @@ static void *file_trans_thread_func(void *args) {
 			int recvlen = -1, writelen = -1;
 			FILE *fp = NULL;
 			unsigned char *recvbuf = NULL;
+			// int rcvbuf_resize = 8192;
 
 			do {
 				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
@@ -918,6 +871,12 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
+					// if (setsockopt(client_fd, SOL_SOCKET, SO_RCVBUF, (const void *)&rcvbuf_resize, sizeof(rcvbuf_resize)) < 0) {
+					// 	sleng_error("setsockopt recv_buff_size failed");
+					// 	ret = -1;
+					// 	break;
+					// }
+
 					fp = fopen(tmp_path, "w");
 					if (fp == NULL)
 					{
@@ -929,13 +888,14 @@ static void *file_trans_thread_func(void *args) {
 					do {
 						recvlen = recv(client_fd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0);
 						writelen = fwrite(recvbuf, 1, recvlen, fp);
-						if (recvlen != writelen)
+						if (writelen < recvlen)
 						{
 							sleng_error("fwrite error, writelen(%d) != recvlen(%d)", writelen, recvlen);
 							ret = -1;
 							break;
 						}
-					} while(recvlen <= 0);
+						if (fd->debug_flag) sleng_debug("recvlen=%d, writelen=%d\n", recvlen, writelen);
+					} while(recvlen > 0);
 				}
 			} while(0);
 
@@ -943,6 +903,11 @@ static void *file_trans_thread_func(void *args) {
 			{
 				fclose(fp);
 				fp = NULL;
+			}
+			if (client_fd)
+			{
+				close(client_fd);
+				client_fd = -1;
 			}
 			if (listen_fd > 0)
 			{
@@ -974,7 +939,7 @@ static void *file_trans_thread_func(void *args) {
 					break;
 				}
 				ret = system(cmd);
-				printf("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
+				sleng_debug("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
 				if(ret) {
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
 					break;
@@ -993,13 +958,25 @@ static void *file_trans_thread_func(void *args) {
 		}
 
 		//exec post cmd
-		//md5 check
+		/* Filesize Check */
+		if (get_file_size(tmp_path) != trans_args->up_head->file_size)
+		{
+			sleng_error("File size check error, local_file(%u) != param(%u)", get_file_size(tmp_path), trans_args->up_head->file_size);
+			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+			break;
+		}
+		sleng_debug("File size check success, local_file(%u) != param(%u)\n", get_file_size(tmp_path), trans_args->up_head->file_size);
+
+		/* MD5 Check */
 		memset(local_md5, 0, sizeof(local_md5));
-		// printf("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
+		// sleng_debug("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
 		if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {	//trans_md5 is not all 0x00;
+			int i;
+			get_md5sum(tmp_path, local_md5, sizeof(local_md5));
+#if 0
 			char tmp[3] = {0, };
 			char buf[128] = {0, };
-			int i;
+
 			FILE *fp = NULL;
 			memset(cmd, 0, sizeof(cmd));
 			sprintf(cmd, "md5sum %s", tmp_path);
@@ -1011,7 +988,7 @@ static void *file_trans_thread_func(void *args) {
 					break;
 				}
 				fread(buf, 1, sizeof(buf), fp);
-				printf("buf=%s\n", buf);
+				sleng_debug("buf=%s\n", buf);
 			} while (0);
 			if (fp) pclose(fp);
 
@@ -1020,23 +997,24 @@ static void *file_trans_thread_func(void *args) {
 				tmp[1] = buf[i+1];
 				tmp[2] = '\0';
 				local_md5[i/2] = atox(tmp);
-				// printf("tmp=%s, local_md5[%d]=%02hhx\n", tmp, i/2, local_md5[i/2]);
+				// sleng_debug("tmp=%s, local_md5[%d]=%02hhx\n", tmp, i/2, local_md5[i/2]);
 			}
 			if (buf[i] != ' ') {
-				printf("local md5sum format error\n");
+				sleng_debug("local md5sum format error\n");
 				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 				break;
 			}
-			printf("local_md5 =");
+#endif
+			sleng_debug("local_md5 =");
 			for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
 			printf("\n");
-			printf("remote_md5=");
+			sleng_debug("remote_md5=");
 			for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
 			printf("\n");
 			if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
-				printf("md5 check success!\n");
+				sleng_debug("md5 check success!\n");
 			} else {
-				printf("md5 check failed!\n");
+				sleng_debug("md5 check failed!\n");
 				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 				break;
 			}
@@ -1056,7 +1034,7 @@ static void *file_trans_thread_func(void *args) {
 				// break;
 			}
 			x_flag = !access(trans_args->up_head->local_path, X_OK);
-			printf("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
+			sleng_debug("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
 			unlink(trans_args->up_head->local_path);
 		}
 
@@ -1091,7 +1069,7 @@ static void *file_trans_thread_func(void *args) {
 		sleng_error("sendto self_report ack failed");
 	}
 	pthread_mutex_unlock(trans_args->mutex);
-	printf("Upgrade [%s] %s!\n", trans_args->up_head->local_path, (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
+	sleng_debug("Upgrade [%s] %s!\n", trans_args->up_head->local_path, (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
 
 	return (void *)ret;
 }
@@ -1135,25 +1113,25 @@ int main(int argc, char const *argv[])
 			break;
 		case 'p' :
 			port = atoi(optarg);
-			printf("%s: port = %d\n", __FILE__, port);
+			sleng_debug("%s: port = %d\n", __FILE__, port);
 			break;
 		case 'd' :
 			fd->debug_flag = 1;
 			break;
 		default :
-			printf("Param(%c) is invalid\n", opt);
+			sleng_debug("Param(%c) is invalid\n", opt);
 			break;
 		}
 	} while (1);
 
-	// printf("%s:%d, sizeof(struct ifreq)=%d\n", __FILE__, __LINE__, sizeof(struct ifreq));
-	printf("Start dth_config_server...\n");
+	// sleng_debug("%s:%d, sizeof(struct ifreq)=%d\n", __FILE__, __LINE__, sizeof(struct ifreq));
+	sleng_debug("Start dth_config_server...\n");
 #if 0	/* Use system to setup network, do NOT use this any more */
 	memset(&netparams, 0, sizeof(network_params_t));
 	if (network_load_params(&netparams, NETWORK_PARAMS_FILE_PATH) != -1) {
 		ret = network_modify(&netparams, NULL);
 	}
-	// printf("%s@%s:%d\n", __FILE__, __func__, __LINE__);
+	// sleng_debug("%s@%s:%d\n", __FILE__, __func__, __LINE__);
 #endif
 
 	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -1161,7 +1139,7 @@ int main(int argc, char const *argv[])
 		sleng_error("socket error");
 		return -1;
 	}
-	// printf("%s:%d\n", __FILE__, __LINE__);
+	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
 	memset(&local_addr, 0, sizeof(struct sockaddr_in));
 	local_addr.sin_family = AF_INET;
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -1171,31 +1149,32 @@ int main(int argc, char const *argv[])
 		close(ucst_sockfd);
 	}
 	sockopt = 1;
-	// printf("%s:%d\n", __FILE__, __LINE__);
+	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
 		sleng_error("set setsockopt failed");
 	}
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
 		sleng_error("setsockopt timeout");
 	}
-	// printf("%s:%d\n", __func__, __LINE__);
+	// sleng_debug("%s:%d\n", __func__, __LINE__);
 	while (!fd->quit_flag) {
 		int recvlen;
 
 		recvbuf[0] = recvbuf[1] = recvbuf[2] = recvbuf[3] = 0;	//make sure do NOT use the prev value
 		recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
-		if (fd->debug_flag && recvlen >= 0) {
+		if (fd->debug_flag && recvlen >= 0)
+		{
 			sleng_debug("recvlen=%d, sizeof(dth_head_t)=%d, buf=\n", recvlen, sizeof(dth_head_t));
 			// if (recvlen >= 0) {
 				print_in_hex(recvbuf, recvlen, NULL, NULL);
 			// }
 		}
 
-		if (recvlen >= sizeof(dth_head_t)) {
+		if (recvlen >= 0 && recvlen >= sizeof(dth_head_t)) {
 			dth_head_t *dth_head = (dth_head_t *)recvbuf;
-			if(fd->debug_flag) printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if(fd->debug_flag) sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0') {
-				if(fd->debug_flag) printf("bad sync, just drop! dth ... ... ... ...\n");
+				// if(fd->debug_flag) sleng_debug("bad sync, just drop! dth ... ... ... ...\n");
 				continue;
 			}
 			// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
@@ -1262,7 +1241,7 @@ int main(int argc, char const *argv[])
 					if(fd->debug_flag) sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
 					if(fd->debug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
 					if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0) {
-						printf("Get working if status failed\n");
+						sleng_error("Get working if status failed");
 						break;
 					}
 					if(fd->debug_flag) print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
@@ -1287,11 +1266,13 @@ int main(int argc, char const *argv[])
 			}
 
 			case DTH_REQ_FILE_TRANS: {
+				// sleng_debug("length=%u, sizeof(upgrade_head_t)=%d, payload_head=%s\n", dth_head->length, sizeof(upgrade_head_t), &recvbuf[sizeof(dth_head_t)]);
 				if (dth_head->length == sizeof(upgrade_head_t)
 					&& recvbuf[sizeof(dth_head_t)+0] == 'd'
 					&& recvbuf[sizeof(dth_head_t)+1] == 'u'
 					&& recvbuf[sizeof(dth_head_t)+2] == 'f'
-					&& recvbuf[sizeof(dth_head_t)+3] == '\0') {
+					&& recvbuf[sizeof(dth_head_t)+3] == '\0')
+				{
 					trans_args.mutex       = &send_mutex;
 					trans_args.up_head     = (upgrade_head_t *)(recvbuf + sizeof(dth_head_t));
 					trans_args.sendbuf     = sendbuf;
@@ -1344,12 +1325,12 @@ int main(int argc, char const *argv[])
 			}
 
 			default :
-				if(fd->debug_flag) printf("Invalid type [%d]\n", dth_head->type);
+				if(fd->debug_flag) sleng_debug("Invalid type [%d]\n", dth_head->type);
 			}
 		}
 	}
 
-	printf("Stop dth_config_server...\n");
+	sleng_debug("Stop dth_config_server...\n");
 	if (ucst_sockfd > 0) close(ucst_sockfd);
 	pthread_mutex_destroy(&send_mutex);
 

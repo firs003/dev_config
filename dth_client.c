@@ -29,27 +29,27 @@
 void print_in_hex(void *buf, int len, char *pre, char *end) {
 	int i, j, k, row=(len>>4);
 	if (buf == NULL) {
-		printf("params invalid, buf=%p", buf);
+		sleng_debug("params invalid, buf=%p", buf);
 		return;
 	}
-	if (pre) printf("%s:\n", pre);
+	if (pre) sleng_debug("%s:\n", pre);
 	for (i=0, k=0; k<row; ++k) {
-		printf("\t[0%02d0] ", k);
-		for (j=0; j<8; ++j, ++i) printf("%02hhx ", *((unsigned char *)buf+i));
-		printf("  ");
-		for (j=8; j<16; ++j, ++i) printf("%02hhx ", *((unsigned char *)buf+i));
-		printf("\n");
+		sleng_debug("\t[0%02d0] ", k);
+		for (j=0; j<8; ++j, ++i) sleng_debug("%02hhx ", *((unsigned char *)buf+i));
+		sleng_debug("  ");
+		for (j=8; j<16; ++j, ++i) sleng_debug("%02hhx ", *((unsigned char *)buf+i));
+		sleng_debug("\n");
 	}
 	if (len&0xf) {
-		printf("\t[0%02d0] ", k);
+		sleng_debug("\t[0%02d0] ", k);
 		for (k=0; k<(len&0xf); ++k, ++i) {
-			if (k==4) printf("  ");
-			printf("%02hhx ", *((unsigned char *)buf+i));
+			if (k==4) sleng_debug("  ");
+			sleng_debug("%02hhx ", *((unsigned char *)buf+i));
 		}
-		printf("\n");
+		sleng_debug("\n");
 	}
-	if (end) printf("%s", end);
-	printf("\n");
+	if (end) sleng_debug("%s", end);
+	sleng_debug("\n");
 }
 
 static inline unsigned char atox(const char *str) {
@@ -66,7 +66,7 @@ static inline unsigned char atox(const char *str) {
 	} else if (high >= 'a' && high <= 'f') {
 		h = high - 'a' + 10;
 	}
-	// printf("h=%hhx, h<<8=%hhx, hl=%hhx\n", h, (h<<4), (h<<4)|l);
+	// sleng_debug("h=%hhx, h<<8=%hhx, hl=%hhx\n", h, (h<<4), (h<<4)|l);
 	return (h<<4)|l;
 }
 
@@ -92,27 +92,27 @@ unsigned int get_local_ip(const char *ifname) {
 			int i;
 			ifr_array = calloc(DTH_CONFIG_SERVER_TMP_IFR_COUNT, sizeof(struct ifreq));
 			if(ifr_array == NULL) {
-				perror("calloc");
+				sleng_error("calloc");
 				ret = -1;
 				break;
 			}
 			memset(&ifr, 0, sizeof(struct ifreq));
 			if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-				perror("socket");
+				sleng_error("socket");
 				ret = -1;
 				break;
 			}
 			ifc.ifc_len = DTH_CONFIG_SERVER_TMP_IFR_COUNT * sizeof(struct ifreq);
 			ifc.ifc_buf = (void *)ifr_array;
 			if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
-				perror("set ipaddr err\n");
+				sleng_error("set ipaddr err\n");
 				ret = -1;
 				break;
 			}
 
-			printf("%s[%d]:ifr_count=%ld\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
+			sleng_debug("%s[%d]:ifr_count=%ld\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
 			for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++) {
-				// printf("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
+				// sleng_debug("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 				if (strncmp("lo", ifr_array[i].ifr_name, IFNAMSIZ)) {
 					//steven 09-27-09, get ipaddr
 					strncpy(ifr.ifr_name, ifr_array[i].ifr_name, IFNAMSIZ);
@@ -120,7 +120,7 @@ unsigned int get_local_ip(const char *ifname) {
 			}
 		}
 		if (ioctl(sockfd, SIOCGIFADDR, &ifr) < 0) {
-			perror("set ipaddr err\n");
+			sleng_error("set ipaddr err\n");
 			ret = -1;
 			break;
 		}
@@ -313,7 +313,7 @@ int main(int argc, char const *argv[])
 
 	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (-1 == ucst_sockfd) {
-		perror("socket error");
+		sleng_error("socket error");
 		goto cleanup;
 	}
 	memset(&local_addr, 0, sizeof(struct sockaddr_in));
@@ -321,16 +321,16 @@ int main(int argc, char const *argv[])
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(port);
 	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
-		printf("unicast bind return %d:%s\n", errno, strerror(errno));
+		sleng_debug("unicast bind return %d:%s\n", errno, strerror(errno));
 		goto cleanup;
 	}
 	sockopt = 1;
-	// printf("%s:%d\n", __FILE__, __LINE__);
+	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
-		perror("set setsockopt failed");
+		sleng_error("set setsockopt failed");
 	}
 	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
-		perror("setsockopt timeout");
+		sleng_error("setsockopt timeout");
 	}
 
 	do {
@@ -349,9 +349,8 @@ int main(int argc, char const *argv[])
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
 				do_reboot_flag = 1;
-				printf("%s:%d\n", __FILE__, __LINE__);
 			} else {
-				perror("inet_aton");
+				sleng_error("inet_aton");
 			}
 			break;
 		}
@@ -361,15 +360,14 @@ int main(int argc, char const *argv[])
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
 				do_poweroff_flag = 1;
-				printf("%s:%d\n", __FILE__, __LINE__);
 			} else {
-				perror("inet_aton");
+				sleng_error("inet_aton");
 			}
 			break;
 		}
 		case 'p' :	//May be a bug if -p comes after -b, -b will use default port, sleng 20180720(do_action mask can solve this issue)
 			port = atoi(optarg);
-			printf("%s: port = %d\n", __FILE__, port);
+			sleng_debug("port = %d\n", port);
 			break;
 		case 'b' : {
 			int board_count = 0;
@@ -377,12 +375,12 @@ int main(int argc, char const *argv[])
 			int bcst_sockfd = -1;
 			do {
 				if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-					perror("refresh socket");
+					sleng_error("refresh socket");
 					break;
 				}
 				sockopt = 1;
 				if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
-					perror("set setsockopt failed");
+					sleng_error("set setsockopt failed");
 					break;
 				}
 				dth_head_t *dth_head = (dth_head_t *)sendbuf;
@@ -399,7 +397,7 @@ int main(int argc, char const *argv[])
 				bcst_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
 				ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
 				if (ret < 0) {
-					perror("sendto self_report req failed");
+					sleng_error("sendto self_report req failed");
 					break;
 				}
 				sleng_debug("sendto return %d\n", ret);
@@ -414,9 +412,9 @@ int main(int argc, char const *argv[])
 					}
 					print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-					printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+					sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 					if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REPORT_SELF) {
-						printf("Invalid sync head or type\n");
+						sleng_debug("Invalid sync head or type\n");
 						continue;
 					}
 					board_count++;
@@ -424,17 +422,17 @@ int main(int argc, char const *argv[])
 					for (i = 0; i < dth_head->length/sizeof(network_params_t); i++) {
 						struct in_addr addr;
 						memset(&addr, 0, sizeof(struct in_addr));
-						printf("Board[%d]:if%d, param@%p\n", board_count, i, param);
-						printf("\tifname:%s(%s)\n", param[i].ifname, param[i].up? "up": "down");
+						sleng_debug("Board[%d]:if%d, param@%p\n", board_count, i, param);
+						sleng_debug("\tifname:%s(%s)\n", param[i].ifname, param[i].up? "up": "down");
 						addr.s_addr = param[i].ip;
-						printf("\tip:%s\n", inet_ntoa(addr));
+						sleng_debug("\tip:%s\n", inet_ntoa(addr));
 						addr.s_addr = param[i].mask;
-						printf("\tmask:%s\n", inet_ntoa(addr));
+						sleng_debug("\tmask:%s\n", inet_ntoa(addr));
 						addr.s_addr = param[i].gateway;
-						printf("\tgateway:%s\n", inet_ntoa(addr));
-						printf("\tmac:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n", param[i].mac[0], param[i].mac[1], param[i].mac[2], param[i].mac[3], param[i].mac[4], param[i].mac[5]);
-						printf("\tdhcp_enable:%d\n", param[i].dhcp_flag);
-						printf("\n");
+						sleng_debug("\tgateway:%s\n", inet_ntoa(addr));
+						sleng_debug("\tmac:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n", param[i].mac[0], param[i].mac[1], param[i].mac[2], param[i].mac[3], param[i].mac[4], param[i].mac[5]);
+						sleng_debug("\tdhcp_enable:%d\n", param[i].dhcp_flag);
+						sleng_debug("\n");
 					}
 				}
 			} while(0);
@@ -448,7 +446,7 @@ int main(int argc, char const *argv[])
 				dest_ip = addr.s_addr;
 				do_upgrade_flag = 1;
 			} else {
-				perror("inet_aton");
+				sleng_error("inet_aton");
 			}
 			break;
 		}
@@ -467,7 +465,7 @@ int main(int argc, char const *argv[])
 				uphead.remote_ip = addr.s_addr;
 				do_upgrade_flag = 1;
 			} else {
-				perror("inet_aton");
+				sleng_error("inet_aton");
 			}
 			break;
 		}
@@ -491,17 +489,17 @@ int main(int argc, char const *argv[])
 				dest_ip = addr.s_addr;
 				do_netset_flag = 1;
 			} else {
-				perror("inet_aton");
+				sleng_error("inet_aton");
 			}
 			break;
 		}
 		default :
-			printf("Param(%c) is invalid\n", opt);
+			sleng_debug("Param(%c) is invalid\n", opt);
 			break;
 		}
 	} while (1);
 
-	// printf("%s:%d\n", __func__, __LINE__);
+	// sleng_debug("%s:%d\n", __func__, __LINE__);
 
 	if (do_reboot_flag) {
 		do {
@@ -517,24 +515,24 @@ int main(int argc, char const *argv[])
 			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
-				perror("sendto");
+				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
 			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
-				perror("recvfrom");
+				sleng_error("recvfrom");
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REBOOT) {
-				printf("Invalid sync head or type\n");
+				sleng_debug("Invalid sync head or type\n");
 				break;
 			} else {
-				printf("Reboot Success\n");
+				sleng_debug("Reboot Success\n");
 			}
 		} while (0);
 	}
@@ -553,24 +551,24 @@ int main(int argc, char const *argv[])
 			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
-				perror("sendto");
+				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
 			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
-				perror("recvfrom");
+				sleng_error("recvfrom");
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_POWEROFF) {
-				printf("Invalid sync head or type\n");
+				sleng_debug("Invalid sync head or type\n");
 				break;
 			} else {
-				printf("Reboot Success\n");
+				sleng_debug("Reboot Success\n");
 			}
 		} while (0);
 	}
@@ -597,7 +595,7 @@ int main(int argc, char const *argv[])
 			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
-				perror("sendto");
+				sleng_error("sendto");
 				break;
 			}
 
@@ -615,16 +613,16 @@ int main(int argc, char const *argv[])
 			dth_head = (dth_head_t *)recvbuf;
 			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
-				perror("recvfrom");
+				sleng_error("recvfrom");
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
-			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_FILE_TRANS) {
-				printf("Invalid sync head or type\n");
+				sleng_debug("Invalid sync head or type\n");
 				break;
 			} else {
-				printf("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
+				sleng_debug("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
 			}
 		}while (0);
 	}
@@ -663,24 +661,24 @@ int main(int argc, char const *argv[])
 			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
-				perror("sendto");
+				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
 			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
-				perror("recvfrom");
+				sleng_error("recvfrom");
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_SET_NETWORK_PARAMS) {
-				printf("Invalid sync head or type\n");
+				sleng_debug("Invalid sync head or type\n");
 				break;
 			} else {
-				printf("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
+				sleng_debug("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
 			}
 		}while (0);
 	}

@@ -604,8 +604,12 @@ int main(int argc, char const *argv[])
 			/* Transfer file to board via custom tcp protocol */
 			if (uphead.trans_mode == FILE_TRANS_MODE_R2L_NEGATIVE && uphead.trans_protocol == FILE_TRANS_PROTOCOL_USER)
 			{
-				sleep(1);
-				_file_transfer(uphead.remote_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+				recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				dth_head = (dth_head_t *)recvbuf;
+				if (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_READY)
+				{
+					_file_transfer(uphead.remote_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+				}
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
@@ -615,9 +619,6 @@ int main(int argc, char const *argv[])
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
-
-
-
 			printf("%s: recvfrom [ip=%08x, port=%hu]\n", __FILE__, (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_FILE_TRANS) {
 				printf("Invalid sync head or type\n");

@@ -804,7 +804,7 @@ static void *file_trans_thread_func(void *args) {
 		case FILE_TRANS_MODE_R2L_NEGATIVE:
 		{
 			int listen_fd = -1;
-			struct timeval recv_timeout = {2, 0};
+			struct timeval recv_timeout = {5, 0};
 			struct sockaddr_in address;
 			int val = 1;
 			int client_fd = -1;
@@ -852,11 +852,19 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
-					if (listen(listen_fd, 4) < 0) {
+					if (listen(listen_fd, 1) < 0) {
 						sleng_error("listen failed");
 						ret = -1;
 						break;
 					}
+
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
+					pthread_mutex_lock(trans_args->mutex);
+					ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+					if (ret < 0) {
+						sleng_error("sendto self_report ack failed");
+					}
+					pthread_mutex_unlock(trans_args->mutex);
 
 					client_fd = accept(listen_fd, (struct sockaddr *)&address, &addr_len);
 					if (client_fd < 0) {
@@ -965,7 +973,7 @@ static void *file_trans_thread_func(void *args) {
 			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 			break;
 		}
-		sleng_debug("File size check success, local_file(%u) != param(%u)\n", get_file_size(tmp_path), trans_args->up_head->file_size);
+		sleng_debug("File size check success, local_file(%u) == param(%u)\n", get_file_size(tmp_path), trans_args->up_head->file_size);
 
 		/* MD5 Check */
 		memset(local_md5, 0, sizeof(local_md5));
@@ -1060,6 +1068,7 @@ static void *file_trans_thread_func(void *args) {
 			sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
 		}
 #endif
+		dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 	} while (0);
 
 	//send back file trans result
@@ -1089,9 +1098,11 @@ int main(int argc, char const *argv[])
 	pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
 	pthread_t file_trans_tid;
 	struct file_trans_args trans_args;
+	unsigned int ipaddr = 0;
 
-	const char short_options[] = "p:d";
+	const char short_options[] = "p:da:";
 	const struct option long_options[] = {
+		{"addr", required_argument, NULL, 'a'},
 		{"port", required_argument, NULL, 'p'},
 		{"debug", no_argument, 		NULL, 'd'},
 		{0, 0, 0, 0}
@@ -1111,6 +1122,17 @@ int main(int argc, char const *argv[])
 		switch (opt) {
 		case 0 :
 			break;
+		case 'a' :
+		{
+			struct in_addr addr;
+			memset(&addr, 0, sizeof(struct in_addr));
+			if (inet_aton(optarg, &addr)) {
+				ipaddr = addr.s_addr;
+			} else {
+				sleng_error("inet_aton error");
+			}
+			break;
+		}
 		case 'p' :
 			port = atoi(optarg);
 			sleng_debug("%s: port = %d\n", __FILE__, port);
@@ -1142,7 +1164,7 @@ int main(int argc, char const *argv[])
 	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
 	memset(&local_addr, 0, sizeof(struct sockaddr_in));
 	local_addr.sin_family = AF_INET;
-	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	local_addr.sin_addr.s_addr = (ipaddr)? ipaddr: htonl(INADDR_ANY);
 	local_addr.sin_port = htons(port);
 	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
 		sleng_error("unicast socket bind");

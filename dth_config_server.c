@@ -1159,8 +1159,20 @@ int main(int argc, char const *argv[])
 	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (-1 == ucst_sockfd) {
 		sleng_error("socket error");
-		return -1;
+		goto cleanup;
 	}
+
+	sockopt = 1;
+	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
+	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
+		sleng_error("set setsockopt failed");
+		goto cleanup;
+	}
+	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
+		sleng_error("setsockopt timeout");
+		goto cleanup;
+	}
+
 	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
 	memset(&local_addr, 0, sizeof(struct sockaddr_in));
 	local_addr.sin_family = AF_INET;
@@ -1169,15 +1181,9 @@ int main(int argc, char const *argv[])
 	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
 		sleng_error("unicast socket bind");
 		close(ucst_sockfd);
+		goto cleanup;
 	}
-	sockopt = 1;
-	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
-	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
-		sleng_error("set setsockopt failed");
-	}
-	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
-		sleng_error("setsockopt timeout");
-	}
+
 	// sleng_debug("%s:%d\n", __func__, __LINE__);
 	while (!fd->quit_flag) {
 		int recvlen;
@@ -1373,6 +1379,7 @@ int main(int argc, char const *argv[])
 		}
 	}
 
+cleanup:
 	sleng_debug("Stop dth_config_server...\n");
 	if (ucst_sockfd > 0) close(ucst_sockfd);
 	pthread_mutex_destroy(&send_mutex);

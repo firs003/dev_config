@@ -1237,6 +1237,7 @@ int main(int argc, char const *argv[])
 				pthread_mutex_unlock(&send_mutex);
 				sleng_debug("Rebooting");
 				system("reboot");
+				break;
 			}
 
 			case DTH_REQ_POWEROFF: {
@@ -1256,6 +1257,7 @@ int main(int argc, char const *argv[])
 				pthread_mutex_unlock(&send_mutex);
 				sleng_debug("Poweroff");
 				system("poweroff");
+				break;
 			}
 
 			case DTH_REQ_REPORT_SELF: {

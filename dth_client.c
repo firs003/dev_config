@@ -264,12 +264,13 @@ int main(int argc, char const *argv[])
 	 * -u upgrade
 	 */
 	struct do_flags {
+		int report:1;
 		int restart:1;
 		int reboot:1;
 		int poweroff:1;
 		int upgrade:1;
 		int netset:1;
-		int res:3;
+		int res:2;
 	} do_flag;
 	int ret;
 	unsigned short src_port = DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT;
@@ -390,76 +391,9 @@ int main(int argc, char const *argv[])
 			dst_port = atoi(optarg);
 			sleng_debug("dst_port = %d\n", dst_port);
 			break;
-		case 'b' : {
-			int board_count = 0;
-			struct sockaddr_in bcst_addr;
-			int bcst_sockfd = -1;
-			do {
-				if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-					sleng_error("refresh socket");
-					break;
-				}
-				sockopt = 1;
-				if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
-					sleng_error("set setsockopt failed");
-					break;
-				}
-				dth_head_t *dth_head = (dth_head_t *)sendbuf;
-				dth_head->sync[0] = 'd';
-				dth_head->sync[1] = 't';
-				dth_head->sync[2] = 'h';
-				dth_head->sync[3] = '\0';
-				dth_head->type = DTH_REQ_REPORT_SELF;
-				dth_head->length = 0;
-
-				memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
-				bcst_addr.sin_family = AF_INET;
-				bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
-				bcst_addr.sin_port = htons(dst_port);
-				ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
-				if (ret < 0) {
-					sleng_error("sendto self_report req failed");
-					break;
-				}
-				sleng_debug("sendto return %d\n", ret);
-
-				while (1) {
-					int i;
-					dth_head_t *dth_head = (dth_head_t *)recvbuf;
-					network_params_t *param = NULL;
-					recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
-					if (recvlen <= 0) {
-						break;
-					}
-					print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
-
-					sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
-					if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REPORT_SELF) {
-						sleng_debug("Invalid sync head or type\n");
-						continue;
-					}
-					board_count++;
-					param = (network_params_t *)(recvbuf + sizeof(dth_head_t));
-					for (i = 0; i < dth_head->length/sizeof(network_params_t); i++) {
-						struct in_addr addr;
-						memset(&addr, 0, sizeof(struct in_addr));
-						sleng_debug("Board[%d]:if%d, param@%p\n", board_count, i, param);
-						sleng_debug("\tifname:%s(%s)\n", param[i].ifname, param[i].up? "up": "down");
-						addr.s_addr = param[i].ip;
-						sleng_debug("\tip:%s\n", inet_ntoa(addr));
-						addr.s_addr = param[i].mask;
-						sleng_debug("\tmask:%s\n", inet_ntoa(addr));
-						addr.s_addr = param[i].gateway;
-						sleng_debug("\tgateway:%s\n", inet_ntoa(addr));
-						sleng_debug("\tmac:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n", param[i].mac[0], param[i].mac[1], param[i].mac[2], param[i].mac[3], param[i].mac[4], param[i].mac[5]);
-						sleng_debug("\tdhcp_enable:%d\n", param[i].dhcp_flag);
-						sleng_debug("\n");
-					}
-				}
-			} while(0);
-			if (bcst_sockfd > 0) close(bcst_sockfd);
+		case 'b' :
+			do_flag.report = 1;
 			break;
-		}
 		case 'u' : {
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
@@ -521,6 +455,76 @@ int main(int argc, char const *argv[])
 	} while (1);
 
 	// sleng_debug("%s:%d\n", __func__, __LINE__);
+
+	if (do_flag.report) {
+		int board_count = 0;
+		struct sockaddr_in bcst_addr;
+		int bcst_sockfd = -1;
+		do {
+			if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+				sleng_error("refresh socket");
+				break;
+			}
+			sockopt = 1;
+			if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
+				sleng_error("set setsockopt failed");
+				break;
+			}
+			dth_head_t *dth_head = (dth_head_t *)sendbuf;
+			dth_head->sync[0] = 'd';
+			dth_head->sync[1] = 't';
+			dth_head->sync[2] = 'h';
+			dth_head->sync[3] = '\0';
+			dth_head->type = DTH_REQ_REPORT_SELF;
+			dth_head->length = 0;
+
+			memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
+			bcst_addr.sin_family = AF_INET;
+			bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
+			bcst_addr.sin_port = htons(dst_port);
+			ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
+			if (ret < 0) {
+				sleng_error("sendto self_report req failed");
+				break;
+			}
+			sleng_debug("sendto return %d\n", ret);
+
+			while (1) {
+				int i;
+				dth_head_t *dth_head = (dth_head_t *)recvbuf;
+				network_params_t *param = NULL;
+				recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				if (recvlen <= 0) {
+					break;
+				}
+				print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+
+				sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+				if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REPORT_SELF) {
+					sleng_debug("Invalid sync head or type\n");
+					continue;
+				}
+				board_count++;
+				param = (network_params_t *)(recvbuf + sizeof(dth_head_t));
+				for (i = 0; i < dth_head->length/sizeof(network_params_t); i++) {
+					struct in_addr addr;
+					memset(&addr, 0, sizeof(struct in_addr));
+					sleng_debug("Board[%d]:if%d, param@%p\n", board_count, i, param);
+					sleng_debug("\tifname:%s(%s)\n", param[i].ifname, param[i].up? "up": "down");
+					addr.s_addr = param[i].ip;
+					sleng_debug("\tip:%s\n", inet_ntoa(addr));
+					addr.s_addr = param[i].mask;
+					sleng_debug("\tmask:%s\n", inet_ntoa(addr));
+					addr.s_addr = param[i].gateway;
+					sleng_debug("\tgateway:%s\n", inet_ntoa(addr));
+					sleng_debug("\tmac:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n", param[i].mac[0], param[i].mac[1], param[i].mac[2], param[i].mac[3], param[i].mac[4], param[i].mac[5]);
+					sleng_debug("\tdhcp_enable:%d\n", param[i].dhcp_flag);
+					sleng_debug("\n");
+				}
+			}
+		} while(0);
+		if (bcst_sockfd > 0) close(bcst_sockfd);
+	}
 
 	if (do_flag.restart) {
 		do {

@@ -110,7 +110,7 @@ unsigned int get_local_ip(const char *ifname) {
 				break;
 			}
 
-			sleng_debug("%s[%d]:ifr_count=%ld\n", __func__, __LINE__, ifc.ifc_len/sizeof(struct ifreq));
+			sleng_debug("ifr_count=%ld\n", (long)ifc.ifc_len/sizeof(struct ifreq));
 			for (i=0; i<ifc.ifc_len/sizeof(struct ifreq); i++) {
 				// sleng_debug("%s[%d]:%d.ifname=%s\n", __func__, __LINE__, i, ifr_array[i].ifr_name);
 				if (strncmp("lo", ifr_array[i].ifr_name, IFNAMSIZ)) {
@@ -173,7 +173,7 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 		//把客户机的socket和客户机的socket地址结构联系起来
 		if (bind(client_socket, (const struct sockaddr *)&client_addr, sizeof(client_addr)))
 		{
-			sleng_error("Client Bind Port Failed!");
+			sleng_error("Client Bind src_port Failed!");
 			ret = -1;
 			break;
 		}
@@ -253,6 +253,7 @@ enum long_opt_val {
 	LONG_OPT_VAL_NETSET_DHCP	= 213,
 	LONG_OPT_VAL_REBOOT			= 214,
 	LONG_OPT_VAL_POWEROFF		= 215,
+	LONG_OPT_VAL_RESTART		= 216,
 };
 
 int main(int argc, char const *argv[])
@@ -262,9 +263,17 @@ int main(int argc, char const *argv[])
 	 *
 	 * -u upgrade
 	 */
-	int do_netset_flag = 0, do_upgrade_flag = 0, do_reboot_flag = 0, do_poweroff_flag = 0;
+	struct do_flags {
+		int restart:1;
+		int reboot:1;
+		int poweroff:1;
+		int upgrade:1;
+		int netset:1;
+		int res:3;
+	} do_flag;
 	int ret;
-	unsigned short port = DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT;
+	unsigned short src_port = DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT;
+	unsigned short dst_port = DTH_CONFIG_BOARD_DEFAULT_UDP_PORT;
 	int ucst_sockfd = -1, sockopt;
 	struct sockaddr_in local_addr, remote_addr;
 	socklen_t	remote_addr_len = sizeof(struct sockaddr);
@@ -275,6 +284,7 @@ int main(int argc, char const *argv[])
 	const char short_options[] = "bu:p:m:n:l:r:";
 	const struct option long_options[] = {
 		{"broadcast",	no_argument,		NULL,	'b'},
+		{"restart",		required_argument,	NULL,	LONG_OPT_VAL_RESTART},
 		{"reboot",		required_argument,	NULL,	LONG_OPT_VAL_REBOOT},
 		{"poweroff",	required_argument,	NULL,	LONG_OPT_VAL_POWEROFF},
 		{"upgrade",		required_argument,	NULL,	'u'},
@@ -319,7 +329,7 @@ int main(int argc, char const *argv[])
 	memset(&local_addr, 0, sizeof(struct sockaddr_in));
 	local_addr.sin_family = AF_INET;
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	local_addr.sin_port = htons(port);
+	local_addr.sin_port = htons(src_port);
 	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
 		sleng_debug("unicast bind return %d:%s\n", errno, strerror(errno));
 		goto cleanup;
@@ -343,12 +353,23 @@ int main(int argc, char const *argv[])
 		switch (opt) {
 		case 0 :
 			break;
+		case LONG_OPT_VAL_RESTART : {
+			struct in_addr addr;
+			memset(&addr, 0, sizeof(struct in_addr));
+			if (inet_aton(optarg, &addr)) {
+				dest_ip = addr.s_addr;
+				do_flag.restart = 1;
+			} else {
+				sleng_error("inet_aton");
+			}
+			break;
+		}
 		case LONG_OPT_VAL_REBOOT : {
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
-				do_reboot_flag = 1;
+				do_flag.reboot = 1;
 			} else {
 				sleng_error("inet_aton");
 			}
@@ -359,15 +380,15 @@ int main(int argc, char const *argv[])
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
-				do_poweroff_flag = 1;
+				do_flag.poweroff = 1;
 			} else {
 				sleng_error("inet_aton");
 			}
 			break;
 		}
-		case 'p' :	//May be a bug if -p comes after -b, -b will use default port, sleng 20180720(do_action mask can solve this issue)
-			port = atoi(optarg);
-			sleng_debug("port = %d\n", port);
+		case 'p' :	//May be a bug if -p comes after -b, -b will use default dst_port, sleng 20180720(do_action mask can solve this issue)
+			dst_port = atoi(optarg);
+			sleng_debug("dst_port = %d\n", dst_port);
 			break;
 		case 'b' : {
 			int board_count = 0;
@@ -394,7 +415,7 @@ int main(int argc, char const *argv[])
 				memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
 				bcst_addr.sin_family = AF_INET;
 				bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
-				bcst_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+				bcst_addr.sin_port = htons(dst_port);
 				ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
 				if (ret < 0) {
 					sleng_error("sendto self_report req failed");
@@ -444,26 +465,26 @@ int main(int argc, char const *argv[])
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
-				do_upgrade_flag = 1;
+				do_flag.upgrade = 1;
 			} else {
 				sleng_error("inet_aton");
 			}
 			break;
 		}
 		case 'l' :
-			strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
-			do_upgrade_flag = 1;
+			strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
+			do_flag.upgrade = 1;
 			break;
 		case 'r' :
-			strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
-			do_upgrade_flag = 1;
+			strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
+			do_flag.upgrade = 1;
 			break;
 		case LONG_OPT_VAL_REMOTE_IP : {
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
 				uphead.remote_ip = addr.s_addr;
-				do_upgrade_flag = 1;
+				do_flag.upgrade = 1;
 			} else {
 				sleng_error("inet_aton");
 			}
@@ -487,7 +508,7 @@ int main(int argc, char const *argv[])
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
 				dest_ip = addr.s_addr;
-				do_netset_flag = 1;
+				do_flag.netset = 1;
 			} else {
 				sleng_error("inet_aton");
 			}
@@ -501,7 +522,51 @@ int main(int argc, char const *argv[])
 
 	// sleng_debug("%s:%d\n", __func__, __LINE__);
 
-	if (do_reboot_flag) {
+	if (do_flag.restart) {
+		do {
+			dth_head_t *dth_head = (dth_head_t *)sendbuf;
+			dth_head->sync[0] = 'd';
+			dth_head->sync[1] = 't';
+			dth_head->sync[2] = 'h';
+			dth_head->sync[3] = '\0';
+			dth_head->type = DTH_REQ_RESTART;
+			dth_head->length = 0;
+
+			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_port = htons(dst_port);
+			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			if (sendlen <= 0) {
+				sleng_error("sendto");
+				break;
+			}
+
+			tv.tv_sec = 10;
+			if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//10s timeout
+				sleng_error("setsockopt timeout");
+			}
+			dth_head = (dth_head_t *)recvbuf;
+			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			if (recvlen <= 0) {
+				sleng_error("recvfrom");
+				break;
+			}
+			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
+
+			sleng_debug("recvfrom [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_RESTART) {
+				sleng_debug("Invalid sync head or type\n");
+				break;
+			} else {
+				sleng_debug("Restart service Success\n");
+			}
+			tv.tv_sec = 2;
+			if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//reset to 2s timeout
+				sleng_error("setsockopt timeout");
+			}
+		} while (0);
+	}
+
+	if (do_flag.reboot) {
 		do {
 			dth_head_t *dth_head = (dth_head_t *)sendbuf;
 			dth_head->sync[0] = 'd';
@@ -512,7 +577,7 @@ int main(int argc, char const *argv[])
 			dth_head->length = 0;
 
 			remote_addr.sin_addr.s_addr = dest_ip;
-			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			remote_addr.sin_port = htons(dst_port);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
@@ -527,7 +592,7 @@ int main(int argc, char const *argv[])
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_REBOOT) {
 				sleng_debug("Invalid sync head or type\n");
 				break;
@@ -537,7 +602,7 @@ int main(int argc, char const *argv[])
 		} while (0);
 	}
 
-	if (do_poweroff_flag) {
+	if (do_flag.poweroff) {
 		do {
 			dth_head_t *dth_head = (dth_head_t *)sendbuf;
 			dth_head->sync[0] = 'd';
@@ -548,7 +613,7 @@ int main(int argc, char const *argv[])
 			dth_head->length = 0;
 
 			remote_addr.sin_addr.s_addr = dest_ip;
-			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			remote_addr.sin_port = htons(dst_port);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
@@ -563,7 +628,7 @@ int main(int argc, char const *argv[])
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_POWEROFF) {
 				sleng_debug("Invalid sync head or type\n");
 				break;
@@ -573,7 +638,7 @@ int main(int argc, char const *argv[])
 		} while (0);
 	}
 
-	if (do_upgrade_flag) {
+	if (do_flag.upgrade) {
 		do {
 			dth_head_t *dth_head = (dth_head_t *)sendbuf;
 			dth_head->sync[0] = 'd';
@@ -592,7 +657,7 @@ int main(int argc, char const *argv[])
 			// sleng_debug("length=%lu\n", sizeof(upgrade_head_t));
 
 			remote_addr.sin_addr.s_addr = dest_ip;
-			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			remote_addr.sin_port = htons(dst_port);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
@@ -617,7 +682,7 @@ int main(int argc, char const *argv[])
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
-			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_FILE_TRANS) {
 				sleng_debug("Invalid sync head or type\n");
 				break;
@@ -627,7 +692,7 @@ int main(int argc, char const *argv[])
 		}while (0);
 	}
 
-	if (do_netset_flag) {
+	if (do_flag.netset) {
 		do {
 			network_params_t params = {
 				.ifname = {'e', 't', 'h', '1', '\0', },
@@ -658,7 +723,7 @@ int main(int argc, char const *argv[])
 				memcpy(sendbuf+sizeof(dth_head_t), &params, sizeof(params));
 			}
 			remote_addr.sin_addr.s_addr = dest_ip;
-			remote_addr.sin_port = htons(DTH_CONFIG_BOARD_DEFAULT_UDP_PORT);
+			remote_addr.sin_port = htons(dst_port);
 			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
@@ -673,7 +738,7 @@ int main(int argc, char const *argv[])
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
 
-			sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recvfrom [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_SET_NETWORK_PARAMS) {
 				sleng_debug("Invalid sync head or type\n");
 				break;

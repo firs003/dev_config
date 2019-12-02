@@ -1201,6 +1201,25 @@ int main(int argc, char const *argv[])
 			}
 			// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
 			switch (dth_head->type) {
+			case DTH_REQ_RESTART: {
+				dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type    = DTH_ACK_RESTART;
+				dth_head->length  = 0;
+				sleng_debug("Restart Service");
+				dth_head->res[0] = system("service dmservice restart");
+				pthread_mutex_lock(&send_mutex);
+				ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
+				if (ret < 0) {
+					sleng_error("sendto self_report ack failed");
+				}
+				pthread_mutex_unlock(&send_mutex);
+				break;
+			}
+
 			case DTH_REQ_REBOOT: {
 				dth_head = (dth_head_t *)sendbuf;
 				dth_head->sync[0] = 'd';

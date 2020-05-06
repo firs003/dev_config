@@ -4,6 +4,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <getopt.h>
@@ -729,6 +730,65 @@ static int network_getstaus(void *buf, ssize_t bufsize) {
 	return ret;
 }
 
+static unsigned int _get_block_size(const char *path) {
+	struct stat statbuf;
+	memset(&statbuf, 0, sizeof(statbuf));
+	return (stat(path, &statbuf) == -1)? -1: statbuf.st_blksize;
+}
+
+static int _cp(const char *src, const char *dst) {
+	int ret = 0;
+	unsigned int block_size = _get_block_size(src);
+	void *buf = malloc(block_size);
+	FILE *fp_src = fopen(src, "r");
+	FILE *fp_dst = fopen(dst, "w");
+
+	do {
+		int readlen, writelen;
+		if (buf == NULL) {
+			sleng_error("malloc failure");
+			ret = -1;
+			break;
+		}
+		if (fp_src == NULL) {
+			sleng_error("open src[%s] failure", src);
+			ret = -1;
+			break;
+		}
+		if (fp_dst == NULL) {
+			sleng_error("open dst[%s] failure", dst);
+			ret = -1;
+			break;
+		}
+
+		while(!feof(fp_src)) {
+			readlen = fread(buf, 1, block_size, fp_src);
+			if (readlen < 0) {
+				sleng_error("fread from src[%s] failure", src);
+				ret = -1;
+				break;
+			}
+			writelen = fwrite(buf, 1, readlen, fp_dst);
+			if (writelen != readlen) {
+				sleng_error("write to dst[%s] failure", dst);
+				ret = -1;
+				break;
+			}
+		}
+
+		if (chmod(dst, 0755) == -1) {
+			sleng_error("chmod +x for dst[%s] failure", dst);
+			ret = -1;
+			break;
+		}
+	} while (0);
+
+	if (fp_dst) fclose(fp_dst);
+	if (fp_src) fclose(fp_src);
+	if (buf) free(buf);
+	return ret;
+}
+
 struct file_trans_args {
 	pthread_mutex_t *mutex;
 	upgrade_head_t *up_head;
@@ -1036,8 +1096,8 @@ static void *file_trans_thread_func(void *args) {
 		}
 		if (access(trans_args->up_head->local_path, F_OK) == 0)
 		{
-			if (link(trans_args->up_head->local_path, back_path)) {
-				sleng_error("link1, %s -> %s", trans_args->up_head->local_path, back_path);
+			if (_cp(trans_args->up_head->local_path, back_path)) {
+				sleng_error("cp1, %s -> %s", trans_args->up_head->local_path, back_path);
 				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 				// break;
 			}
@@ -1047,8 +1107,8 @@ static void *file_trans_thread_func(void *args) {
 		}
 
 		/* Copy the new file */
-		if (link(tmp_path, trans_args->up_head->local_path)) {
-			sleng_error("link2, %s -> %s", tmp_path, trans_args->up_head->local_path);
+		if (_cp(tmp_path, trans_args->up_head->local_path)) {
+			sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->local_path);
 			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 			break;
 		}

@@ -75,9 +75,9 @@ typedef struct network_params {
  **************************************************/
 typedef enum file_trans_mode {
 	FILE_TRANS_MODE_R2L_NEGATIVE = 0x00,		/**< Transfer file from remote(PC) to local(Board), the board listen on custom protocol via tcp */
-	FILE_TRANS_MODE_L2R_NEGATIVE = 0x01,		/**< Transfer file from local(Board) to remote(PC), the board connect on custom protocol via tcp */
-	FILE_TRANS_MODE_R2L_POSITIVE = 0x10,		/**< Transfer file from remote(PC) to local(Board), the board call tftp to get file positive */
-	FILE_TRANS_MODE_L2R_POSITIVE = 0x11,		/**< Transfer file from local(Board) to remote(PC), the board call tftp to put file positive */
+	FILE_TRANS_MODE_L2R_NEGATIVE = 0x01,		/**< Transfer file from local(Board) to remote(PC), the board listen on custom protocol via tcp */
+	FILE_TRANS_MODE_R2L_POSITIVE = 0x10,		/**< Transfer file from remote(PC) to local(Board), the board connect on custom protocol via tcp */
+	FILE_TRANS_MODE_L2R_POSITIVE = 0x11,		/**< Transfer file from local(Board) to remote(PC), the board connect on custom protocol via tcp */
 } trans_mode_e;
 
 typedef enum file_trans_protocol {

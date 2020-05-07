@@ -803,14 +803,9 @@ struct file_trans_args {
 static void *file_trans_thread_func(void *args) {
 	PSTATIC_FD fd = &static_fd;
 	struct file_trans_args *trans_args = (struct file_trans_args *)args;
-	char cmd[256] = {0,};
-	unsigned char local_md5[16] = {0, };
 	int ret = 0;
 	// int process_flag = 0;
 	dth_head_t *dth_head = (dth_head_t *)trans_args->sendbuf;
-	char back_path[128] = {0, };
-	char tmp_path[128] = {0, };
-	struct in_addr addr;
 	char x_flag = 0;
 	pthread_detach(pthread_self());
 
@@ -855,7 +850,6 @@ static void *file_trans_thread_func(void *args) {
 		}
 #endif
 
-		sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->local_path), pthread_self());
 		//backup orig file if nessery
 		//exec prev cmd
 		//file trans
@@ -873,8 +867,13 @@ static void *file_trans_thread_func(void *args) {
 			FILE *fp = NULL;
 			unsigned char *recvbuf = NULL;
 			// int rcvbuf_resize = 8192;
+			char back_path[128] = {0, };
+			char tmp_path[128] = {0, };
+			unsigned char local_md5[16] = {0, };
+			struct in_addr addr;
 
 			do {
+				sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->local_path), pthread_self());
 				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
 					recvbuf = (unsigned char *)malloc(DTH_CONFIG_SERVER_RECVBUF_SIZE);
 					if (recvbuf == NULL)
@@ -965,6 +964,135 @@ static void *file_trans_thread_func(void *args) {
 						if (fd->debug_flag) sleng_debug("recvlen=%d, writelen=%d\n", recvlen, writelen);
 					} while(recvlen > 0);
 				}
+				else if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP)
+				{
+					char cmd[256] = {0,};
+
+					memset(&addr, 0, sizeof(struct in_addr));
+					addr.s_addr = trans_args->up_head->remote_ip;
+					//TODO, is FTP cmd like the format of TFTP cmd?
+					if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP) {
+						sprintf(cmd, "%s -l %s -r %s -g %s",
+							"busybox tftp",
+							tmp_path,
+							trans_args->up_head->remote_path,
+							inet_ntoa(addr));
+					} else {
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
+						break;
+					}
+					ret = system(cmd);
+					sleng_debug("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
+					if(ret) {
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
+						break;
+					}
+				}
+
+				//exec post cmd
+				/* Filesize Check */
+				if (get_file_size(tmp_path) != trans_args->up_head->file_size)
+				{
+					sleng_error("File size check error, local_file(%s:%u) != param(%u)", tmp_path, get_file_size(tmp_path), trans_args->up_head->file_size);
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+					break;
+				}
+				sleng_debug("File size check success, local_file(%u) == param(%u)\n", get_file_size(tmp_path), trans_args->up_head->file_size);
+
+				/* MD5 Check */
+				memset(local_md5, 0, sizeof(local_md5));
+				// sleng_debug("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
+				if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {	//trans_md5 is not all 0x00;
+					int i;
+					get_md5sum(tmp_path, local_md5, sizeof(local_md5));
+#if 0
+					char tmp[3] = {0, };
+					char buf[128] = {0, };
+
+					FILE *fp = NULL;
+					memset(cmd, 0, sizeof(cmd));
+					sprintf(cmd, "md5sum %s", tmp_path);
+					do {
+						fp = popen(cmd, "r");
+						if (fp == NULL) {
+							sleng_error("popen md5sum failed");
+							dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+							break;
+						}
+						fread(buf, 1, sizeof(buf), fp);
+						sleng_debug("buf=%s\n", buf);
+					} while (0);
+					if (fp) pclose(fp);
+
+					for (i = 0; i < 32; i += 2) {
+						tmp[0] = buf[i];
+						tmp[1] = buf[i+1];
+						tmp[2] = '\0';
+						local_md5[i/2] = atox(tmp);
+						// sleng_debug("tmp=%s, local_md5[%d]=%02hhx\n", tmp, i/2, local_md5[i/2]);
+					}
+					if (buf[i] != ' ') {
+						sleng_debug("local md5sum format error\n");
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+						break;
+					}
+#endif
+					sleng_debug("local_md5 =");
+					for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
+					printf("\n");
+					sleng_debug("remote_md5=");
+					for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
+					printf("\n");
+					if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
+						sleng_debug("md5 check success!\n");
+					} else {
+						sleng_debug("md5 check failed!\n");
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+						break;
+					}
+				}
+
+				/* Backup old file */
+				sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
+				if (access(back_path, F_OK) == 0)
+				{
+					unlink(back_path);
+				}
+				if (access(trans_args->up_head->local_path, F_OK) == 0)
+				{
+					if (_cp(trans_args->up_head->local_path, back_path)) {
+						sleng_error("cp1, %s -> %s", trans_args->up_head->local_path, back_path);
+						// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+						// break;
+					}
+					x_flag = !access(trans_args->up_head->local_path, X_OK);
+					sleng_debug("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
+					unlink(trans_args->up_head->local_path);
+				}
+
+				/* Copy the new file */
+				if (_cp(tmp_path, trans_args->up_head->local_path)) {
+					sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->local_path);
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+					break;
+				}
+				if (x_flag) chmod(trans_args->up_head->local_path, 0755);
+				if (unlink(tmp_path)) {
+					sleng_error("unlink");
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+					break;
+				}
+
+				/* Resume the upgraded process */
+				/* TODO, with params */
+#if 0
+				if (process_flag) {
+					sprintf(cmd, "%s%s &", (trans_args->up_head->local_path[0] != '/')? "./": "", trans_args->up_head->local_path);
+					system(cmd);
+					sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
+				}
+#endif
+				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 			} while(0);
 
 			if (fp)
@@ -991,144 +1119,26 @@ static void *file_trans_thread_func(void *args) {
 			break;
 		}
 
-		case FILE_TRANS_MODE_R2L_POSITIVE:
-			do {
-				memset(&addr, 0, sizeof(struct in_addr));
-				addr.s_addr = trans_args->up_head->remote_ip;
-				//TODO, is FTP cmd like the format of TFTP cmd?
-				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP) {
-					sprintf(cmd, "%s -l %s -r %s -g %s",
-						"busybox tftp",
-						tmp_path,
-						trans_args->up_head->remote_path,
-						inet_ntoa(addr));
-				} else {
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
-					break;
-				}
-				ret = system(cmd);
-				sleng_debug("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
-				if(ret) {
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
-					break;
-				}
-			} while(0);
+		case FILE_TRANS_MODE_L2R_NEGATIVE:
+		{
 			break;
+		}
+
+		case FILE_TRANS_MODE_R2L_POSITIVE:
+		{
+			break;
+		}
+
+		case FILE_TRANS_MODE_L2R_POSITIVE:
+		{
+			break;
+		}
 
 		default :
 			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
 			break;
 		}
 
-		if (ret == -1)
-		{
-			break;
-		}
-
-		//exec post cmd
-		/* Filesize Check */
-		if (get_file_size(tmp_path) != trans_args->up_head->file_size)
-		{
-			sleng_error("File size check error, local_file(%u) != param(%u)", get_file_size(tmp_path), trans_args->up_head->file_size);
-			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-			break;
-		}
-		sleng_debug("File size check success, local_file(%u) == param(%u)\n", get_file_size(tmp_path), trans_args->up_head->file_size);
-
-		/* MD5 Check */
-		memset(local_md5, 0, sizeof(local_md5));
-		// sleng_debug("memcmp md5 return %d\n", memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)));
-		if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5))) {	//trans_md5 is not all 0x00;
-			int i;
-			get_md5sum(tmp_path, local_md5, sizeof(local_md5));
-#if 0
-			char tmp[3] = {0, };
-			char buf[128] = {0, };
-
-			FILE *fp = NULL;
-			memset(cmd, 0, sizeof(cmd));
-			sprintf(cmd, "md5sum %s", tmp_path);
-			do {
-				fp = popen(cmd, "r");
-				if (fp == NULL) {
-					sleng_error("popen md5sum failed");
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
-					break;
-				}
-				fread(buf, 1, sizeof(buf), fp);
-				sleng_debug("buf=%s\n", buf);
-			} while (0);
-			if (fp) pclose(fp);
-
-			for (i = 0; i < 32; i += 2) {
-				tmp[0] = buf[i];
-				tmp[1] = buf[i+1];
-				tmp[2] = '\0';
-				local_md5[i/2] = atox(tmp);
-				// sleng_debug("tmp=%s, local_md5[%d]=%02hhx\n", tmp, i/2, local_md5[i/2]);
-			}
-			if (buf[i] != ' ') {
-				sleng_debug("local md5sum format error\n");
-				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
-				break;
-			}
-#endif
-			sleng_debug("local_md5 =");
-			for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
-			printf("\n");
-			sleng_debug("remote_md5=");
-			for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
-			printf("\n");
-			if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
-				sleng_debug("md5 check success!\n");
-			} else {
-				sleng_debug("md5 check failed!\n");
-				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
-				break;
-			}
-		}
-
-		/* Backup old file */
-		sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
-		if (access(back_path, F_OK) == 0)
-		{
-			unlink(back_path);
-		}
-		if (access(trans_args->up_head->local_path, F_OK) == 0)
-		{
-			if (_cp(trans_args->up_head->local_path, back_path)) {
-				sleng_error("cp1, %s -> %s", trans_args->up_head->local_path, back_path);
-				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-				// break;
-			}
-			x_flag = !access(trans_args->up_head->local_path, X_OK);
-			sleng_debug("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
-			unlink(trans_args->up_head->local_path);
-		}
-
-		/* Copy the new file */
-		if (_cp(tmp_path, trans_args->up_head->local_path)) {
-			sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->local_path);
-			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-			break;
-		}
-		if (x_flag) chmod(trans_args->up_head->local_path, 0755);
-		if (unlink(tmp_path)) {
-			sleng_error("unlink");
-			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-			break;
-		}
-
-		/* Resume the upgraded process */
-		/* TODO, with params */
-#if 0
-		if (process_flag) {
-			sprintf(cmd, "%s%s &", (trans_args->up_head->local_path[0] != '/')? "./": "", trans_args->up_head->local_path);
-			system(cmd);
-			sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
-		}
-#endif
-		dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 	} while (0);
 
 	//send back file trans result

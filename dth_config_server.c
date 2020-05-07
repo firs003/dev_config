@@ -963,6 +963,8 @@ static void *file_trans_thread_func(void *args) {
 						}
 						if (fd->debug_flag) sleng_debug("recvlen=%d, writelen=%d\n", recvlen, writelen);
 					} while(recvlen > 0);
+					fclose(fp);
+					fp = NULL;
 				}
 				else if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP)
 				{

@@ -1123,6 +1123,140 @@ static void *file_trans_thread_func(void *args) {
 
 		case FILE_TRANS_MODE_L2R_NEGATIVE:
 		{
+			int listen_fd = -1;
+			struct timeval send_timeout = {5, 0};
+			struct sockaddr_in address;
+			int val = 1;
+			int client_fd = -1;
+			socklen_t addr_len = sizeof(struct sockaddr_in);
+			int sendlen = -1, readlen = -1;
+			FILE *fp = NULL;
+			unsigned char *sendbuf = NULL;
+			// int rcvbuf_resize = 8192;
+
+			do {
+				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
+					sendbuf = (unsigned char *)malloc(DTH_CONFIG_SERVER_SENDBUF_SIZE);
+					if (sendbuf == NULL)
+					{
+						sleng_error("malloc for file send buf failed");
+						ret = -1;
+						break;
+					}
+
+					if((listen_fd = socket(AF_INET,SOCK_STREAM,0)) == -1){
+						ret = -1;
+						break;
+					}
+
+					memset(&address, 0, sizeof(struct sockaddr_in));
+					address.sin_family = AF_INET;
+					address.sin_addr.s_addr = htonl(INADDR_ANY);
+					address.sin_port = htons(DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+
+					if (setsockopt(listen_fd, SOL_SOCKET, SO_SNDTIMEO, (char*)&send_timeout, sizeof(struct timeval)) < 0) {
+						sleng_error("setsockopt timeout failed");
+						ret = -1;
+						break;
+					}
+
+					if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0 ) {
+						sleng_error("set setsockopt failed");
+						ret = -1;
+						break;
+					}
+
+					if (-1 == bind(listen_fd, (struct sockaddr *)&address, sizeof(address))) {
+						sleng_error("bind failed");
+						ret = -1;
+						break;
+					}
+
+					if (listen(listen_fd, 1) < 0) {
+						sleng_error("listen failed");
+						ret = -1;
+						break;
+					}
+
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
+					pthread_mutex_lock(trans_args->mutex);
+					ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+					if (ret < 0) {
+						sleng_error("sendto self_report ack failed");
+					}
+					pthread_mutex_unlock(trans_args->mutex);
+
+					client_fd = accept(listen_fd, (struct sockaddr *)&address, &addr_len);
+					if (client_fd < 0) {
+						sleng_error("accept error");
+						ret = -1;
+						break;
+					}
+
+					if (setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, (char*)&send_timeout, sizeof(struct timeval)) < 0) {
+						sleng_error("setsockopt timeout failed");
+						ret = -1;
+						break;
+					}
+
+					// if (setsockopt(client_fd, SOL_SOCKET, SO_RCVBUF, (const void *)&rcvbuf_resize, sizeof(rcvbuf_resize)) < 0) {
+					// 	sleng_error("setsockopt send_buff_size failed");
+					// 	ret = -1;
+					// 	break;
+					// }
+
+					fp = fopen(trans_args->up_head->remote_path, "r");
+					if (fp == NULL)
+					{
+						sleng_error("open [%s] failed", trans_args->up_head->remote_path);
+						ret = -1;
+						break;
+					}
+
+					while (!feof(fp))
+					{
+						readlen = fread(sendbuf, 1, DTH_CONFIG_SERVER_SENDBUF_SIZE, fp);
+						if (readlen == -1)
+						{
+							sleng_error("fread from send file[%s] error", trans_args->up_head->remote_path);
+							ret = -1;
+							break;
+						}
+						sendlen = send(client_fd, sendbuf, readlen, 0);
+						if (sendlen < readlen)
+						{
+							sleng_error("send error, sendlen(%d) != readlen(%d)", sendlen, readlen);
+							ret = -1;
+							break;
+						}
+						// sleng_debug("sendlen=%d, read_len=%d\n", sendlen, readlen);
+						printf("*");
+						fflush(stdout);
+					}
+				}
+			} while(0);
+
+			if (fp)
+			{
+				fclose(fp);
+				fp = NULL;
+			}
+			if (client_fd)
+			{
+				close(client_fd);
+				client_fd = -1;
+			}
+			if (listen_fd > 0)
+			{
+				close(listen_fd);
+				listen_fd = -1;
+			}
+			if (sendbuf)
+			{
+				free(sendbuf);
+				sendbuf = NULL;
+			}
+
 			break;
 		}
 

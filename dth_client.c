@@ -141,6 +141,13 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 	struct sockaddr_in client_addr, server_addr;
 	unsigned char *sendbuf = NULL;
 	int sendlen, readlen;
+	unsigned long long send_total = 0;
+	unsigned int file_size = get_file_size(path);
+	const char *base_name = NULL;
+	int i;
+	struct timeval tv_begin, tv_end;
+	unsigned long long tv_diff_usecs = 0;
+	double speed_stat = 0.0;
 
 	do {
 		if (path == NULL)
@@ -197,6 +204,13 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 			break;
 		}
 
+		for (i = strlen(path); i > 0 && path[i] != '/'; i--)
+			;
+		base_name = path + i + 1;
+
+		printf("%s: %3d%%", base_name, 0);
+		fflush(stdout);
+		gettimeofday(&tv_begin, NULL);
 		while (!feof(fp))
 		{
 			readlen = fread(sendbuf, 1, 4096, fp);
@@ -213,7 +227,23 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 				ret = -1;
 				break;
 			}
-			sleng_debug("sendlen=%d, read_len=%d\n", sendlen, readlen);
+			send_total += sendlen;
+			// sleng_debug("sendlen=%d, read_len=%d, send_total=%d(%d), file_size=%u\n", sendlen, readlen, send_total, send_total * 100, file_size);
+			printf("\b\b\b\b%3llu%%", send_total * 100 / file_size);
+			fflush(stdout);
+		}
+		gettimeofday(&tv_end, NULL);
+		tv_diff_usecs = TIMEVAL_DIFF_USEC(&tv_end, &tv_begin);
+		speed_stat = send_total * 1000000 / tv_diff_usecs;
+		if (speed_stat >= 1000000)
+		{
+			printf("  %llu  %.1f MB/s\n", send_total, speed_stat / 1000000);
+		} else if (speed_stat >= 1000 && speed_stat < 1000000)
+		{
+			printf("  %llu  %.0f KB/s\n", send_total, speed_stat / 1000);
+		} else if (speed_stat >= 0 && speed_stat < 1000)
+		{
+			printf("  %llu  %.0f B/s\n", send_total, speed_stat);
 		}
 	} while(0);
 
@@ -406,11 +436,11 @@ int main(int argc, char const *argv[])
 			break;
 		}
 		case 'l' :
-			strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
+			strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
 			do_flag.upgrade = 1;
 			break;
 		case 'r' :
-			strncpy(uphead.local_path, optarg, sizeof(uphead.local_path));
+			strncpy(uphead.remote_path, optarg, sizeof(uphead.remote_path));
 			do_flag.upgrade = 1;
 			break;
 		case LONG_OPT_VAL_REMOTE_IP : {
@@ -655,8 +685,8 @@ int main(int argc, char const *argv[])
 			uphead.trans_mode     = FILE_TRANS_MODE_R2L_NEGATIVE;
 			uphead.trans_protocol = FILE_TRANS_PROTOCOL_USER;
 			uphead.file_type      = FILE_TYPE_BIN;
-			uphead.file_size      = get_file_size(uphead.remote_path);
-			get_md5sum(uphead.remote_path, uphead.md5, sizeof(uphead.md5));
+			uphead.file_size      = get_file_size(uphead.local_path);
+			get_md5sum(uphead.local_path, uphead.md5, sizeof(uphead.md5));
 			memcpy(sendbuf+sizeof(dth_head_t), &uphead, dth_head->length);
 			// sleng_debug("length=%lu\n", sizeof(upgrade_head_t));
 
@@ -675,7 +705,7 @@ int main(int argc, char const *argv[])
 				dth_head = (dth_head_t *)recvbuf;
 				if (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_READY)
 				{
-					_file_transfer(uphead.remote_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+					_file_transfer(uphead.local_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
 				}
 			}
 

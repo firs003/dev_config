@@ -801,12 +801,20 @@ struct file_trans_args {
 #define BACKUP_DIR "/disthen/backup"
 
 static void *file_trans_thread_func(void *args) {
-	PSTATIC_FD fd = &static_fd;
+	// PSTATIC_FD fd = &static_fd;
 	struct file_trans_args *trans_args = (struct file_trans_args *)args;
 	int ret = 0;
 	// int process_flag = 0;
 	dth_head_t *dth_head = (dth_head_t *)trans_args->sendbuf;
 	char x_flag = 0;
+	unsigned long long trans_count = 0;
+	unsigned int file_size = get_file_size(trans_args->up_head->remote_path);
+	const char *base_name = NULL;
+	int i;
+	struct timeval tv_begin, tv_end;
+	unsigned long long tv_diff_usecs = 0;
+	double speed_stat = 0.0;
+
 	pthread_detach(pthread_self());
 
 	do {
@@ -873,7 +881,7 @@ static void *file_trans_thread_func(void *args) {
 			struct in_addr addr;
 
 			do {
-				sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->local_path), pthread_self());
+				sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->remote_path), pthread_self());
 				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
 					recvbuf = (unsigned char *)malloc(DTH_CONFIG_SERVER_RECVBUF_SIZE);
 					if (recvbuf == NULL)
@@ -952,6 +960,14 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
+					for (i = strlen(trans_args->up_head->remote_path); i > 0 && trans_args->up_head->remote_path[i] != '/'; i--)
+						;
+					base_name = trans_args->up_head->remote_path + i + 1;
+
+					printf("%s: %3d%%", base_name, 0);
+					fflush(stdout);
+					gettimeofday(&tv_begin, NULL);
+
 					do {
 						recvlen = recv(client_fd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0);
 						writelen = fwrite(recvbuf, 1, recvlen, fp);
@@ -961,8 +977,24 @@ static void *file_trans_thread_func(void *args) {
 							ret = -1;
 							break;
 						}
-						if (fd->debug_flag) sleng_debug("recvlen=%d, writelen=%d\n", recvlen, writelen);
+						// sleng_debug("recvlen=%d, writelen=%d, trans_count=%llu\n", recvlen, writelen, trans_count);
+						trans_count += recvlen;
+						printf("\b\b\b\b%3llu%%", trans_count * 100 / file_size);
+						fflush(stdout);
 					} while(recvlen > 0);
+					gettimeofday(&tv_end, NULL);
+					tv_diff_usecs = TIMEVAL_DIFF_USEC(&tv_end, &tv_begin);
+					speed_stat = trans_count * 1000000 / tv_diff_usecs;
+					if (speed_stat >= 1000000)
+					{
+						printf("  %llu  %.1f MB/s\n", trans_count, speed_stat / 1000000);
+					} else if (speed_stat >= 1000 && speed_stat < 1000000)
+					{
+						printf("  %llu  %.0f KB/s\n", trans_count, speed_stat / 1000);
+					} else if (speed_stat >= 0 && speed_stat < 1000)
+					{
+						printf("  %llu  %.0f B/s\n", trans_count, speed_stat);
+					}
 					fclose(fp);
 					fp = NULL;
 				}
@@ -984,7 +1016,7 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 					ret = system(cmd);
-					sleng_debug("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
+					sleng_debug("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->remote_path, cmd, ret);
 					if(ret) {
 						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
 						break;
@@ -1055,30 +1087,30 @@ static void *file_trans_thread_func(void *args) {
 				}
 
 				/* Backup old file */
-				sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->local_path));
+				sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->remote_path));
 				if (access(back_path, F_OK) == 0)
 				{
 					unlink(back_path);
 				}
-				if (access(trans_args->up_head->local_path, F_OK) == 0)
+				if (access(trans_args->up_head->remote_path, F_OK) == 0)
 				{
-					if (_cp(trans_args->up_head->local_path, back_path)) {
-						sleng_error("cp1, %s -> %s", trans_args->up_head->local_path, back_path);
+					if (_cp(trans_args->up_head->remote_path, back_path)) {
+						sleng_error("cp1, %s -> %s", trans_args->up_head->remote_path, back_path);
 						// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 						// break;
 					}
-					x_flag = !access(trans_args->up_head->local_path, X_OK);
+					x_flag = !access(trans_args->up_head->remote_path, X_OK);
 					sleng_debug("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
-					unlink(trans_args->up_head->local_path);
+					unlink(trans_args->up_head->remote_path);
 				}
 
 				/* Copy the new file */
-				if (_cp(tmp_path, trans_args->up_head->local_path)) {
-					sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->local_path);
+				if (_cp(tmp_path, trans_args->up_head->remote_path)) {
+					sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->remote_path);
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					break;
 				}
-				if (x_flag) chmod(trans_args->up_head->local_path, 0755);
+				if (x_flag) chmod(trans_args->up_head->remote_path, 0755);
 				if (unlink(tmp_path)) {
 					sleng_error("unlink");
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
@@ -1089,9 +1121,9 @@ static void *file_trans_thread_func(void *args) {
 				/* TODO, with params */
 #if 0
 				if (process_flag) {
-					sprintf(cmd, "%s%s &", (trans_args->up_head->local_path[0] != '/')? "./": "", trans_args->up_head->local_path);
+					sprintf(cmd, "%s%s &", (trans_args->up_head->remote_path[0] != '/')? "./": "", trans_args->up_head->remote_path);
 					system(cmd);
-					sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->local_path, cmd, ret);
+					sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->remote_path, cmd, ret);
 				}
 #endif
 				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
@@ -1213,6 +1245,14 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
+					for (i = strlen(trans_args->up_head->remote_path); i > 0 && trans_args->up_head->remote_path[i] != '/'; i--)
+						;
+					base_name = trans_args->up_head->remote_path + i + 1;
+
+					printf("%s: %3d%%", base_name, 0);
+					fflush(stdout);
+					gettimeofday(&tv_begin, NULL);
+
 					while (!feof(fp))
 					{
 						readlen = fread(sendbuf, 1, DTH_CONFIG_SERVER_SENDBUF_SIZE, fp);
@@ -1230,8 +1270,23 @@ static void *file_trans_thread_func(void *args) {
 							break;
 						}
 						// sleng_debug("sendlen=%d, read_len=%d\n", sendlen, readlen);
-						printf("*");
+						trans_count += sendlen;
+						// sleng_debug("sendlen=%d, read_len=%d, trans_count=%d(%d), file_size=%u\n", sendlen, readlen, trans_count, trans_count * 100, file_size);
+						printf("\b\b\b\b%3llu%%", trans_count * 100 / file_size);
 						fflush(stdout);
+					}
+					gettimeofday(&tv_end, NULL);
+					tv_diff_usecs = TIMEVAL_DIFF_USEC(&tv_end, &tv_begin);
+					speed_stat = trans_count * 1000000 / tv_diff_usecs;
+					if (speed_stat >= 1000000)
+					{
+						printf("  %llu  %.1f MB/s\n", trans_count, speed_stat / 1000000);
+					} else if (speed_stat >= 1000 && speed_stat < 1000000)
+					{
+						printf("  %llu  %.0f KB/s\n", trans_count, speed_stat / 1000);
+					} else if (speed_stat >= 0 && speed_stat < 1000)
+					{
+						printf("  %llu  %.0f B/s\n", trans_count, speed_stat);
 					}
 				}
 			} while(0);

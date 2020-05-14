@@ -294,6 +294,7 @@ enum long_opt_val {
 	LONG_OPT_VAL_REBOOT			= 214,
 	LONG_OPT_VAL_POWEROFF		= 215,
 	LONG_OPT_VAL_RESTART		= 216,
+	LONG_OPT_VAL_NO_BACKUP		= 217,
 };
 
 int main(int argc, char const *argv[])
@@ -348,6 +349,7 @@ int main(int argc, char const *argv[])
 		{"netset-mask",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_MASK},
 		{"netset-dhcp",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_DHCP},
 		{"debug", 		no_argument, 		NULL, 	'd'},
+		{"no-backup",	no_argument, 		NULL, 	LONG_OPT_VAL_NO_BACKUP},
 		{0, 0, 0, 0}
 	};
 	int opt, index, recvlen, sendlen;
@@ -356,6 +358,7 @@ int main(int argc, char const *argv[])
 		.md5 = {0, },
 		.trans_mode = FILE_TRANS_MODE_R2L_POSITIVE,
 		.trans_protocol = FILE_TRANS_PROTOCOL_TFTP,
+		.backup_flag = 1,
 		.remote_port = 0,
 		.remote_ip = get_local_ip(NULL),
 		.remote_path = {0, },
@@ -493,6 +496,10 @@ int main(int argc, char const *argv[])
 		case 'd' :
 		{
 			fd->debug_flag = 1;
+			break;
+		}
+		case LONG_OPT_VAL_NO_BACKUP : {
+			uphead.backup_flag = 0;
 			break;
 		}
 		default :

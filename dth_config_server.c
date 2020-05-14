@@ -801,7 +801,7 @@ struct file_trans_args {
 #define BACKUP_DIR "/disthen/backup"
 
 static void *file_trans_thread_func(void *args) {
-	// PSTATIC_FD fd = &static_fd;
+	PSTATIC_FD fd = &static_fd;
 	struct file_trans_args *trans_args = (struct file_trans_args *)args;
 	int ret = 0;
 	// int process_flag = 0;
@@ -881,7 +881,15 @@ static void *file_trans_thread_func(void *args) {
 			struct in_addr addr;
 
 			do {
-				sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->remote_path), pthread_self());
+				if (trans_args->up_head->backup_flag)
+				{
+					sprintf(tmp_path, "%s/%s_tftp_%ld", DOWNLOAD_DIR, basename(trans_args->up_head->remote_path), pthread_self());
+				}
+				else
+				{
+					sprintf(tmp_path, "%s", trans_args->up_head->remote_path);
+				}
+
 				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
 					recvbuf = (unsigned char *)malloc(DTH_CONFIG_SERVER_RECVBUF_SIZE);
 					if (recvbuf == NULL)
@@ -1071,12 +1079,14 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 #endif
-					sleng_debug("local_md5 =");
-					for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
-					printf("\n");
-					sleng_debug("remote_md5=");
-					for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
-					printf("\n");
+					if (fd->debug_flag) {
+						sleng_debug("local_md5 =");
+						for (i=0; i<sizeof(local_md5); i++) printf("%02hhx", local_md5[i]);
+						printf("\n");
+						sleng_debug("remote_md5=");
+						for (i=0; i<sizeof(trans_args->up_head->md5); i++) printf("%02hhx", trans_args->up_head->md5[i]);
+						printf("\n");
+					}
 					if (memcmp(trans_args->up_head->md5, local_md5, sizeof(trans_args->up_head->md5)) == 0) {
 						sleng_debug("md5 check success!\n");
 					} else {
@@ -1087,34 +1097,36 @@ static void *file_trans_thread_func(void *args) {
 				}
 
 				/* Backup old file */
-				sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->remote_path));
-				if (access(back_path, F_OK) == 0)
-				{
-					unlink(back_path);
-				}
-				if (access(trans_args->up_head->remote_path, F_OK) == 0)
-				{
-					if (_cp(trans_args->up_head->remote_path, back_path)) {
-						sleng_error("cp1, %s -> %s", trans_args->up_head->remote_path, back_path);
-						// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-						// break;
+				if (trans_args->up_head->backup_flag) {
+					sprintf(back_path, "%s/%s", BACKUP_DIR, basename(trans_args->up_head->remote_path));
+					if (access(back_path, F_OK) == 0)
+					{
+						unlink(back_path);
 					}
-					x_flag = !access(trans_args->up_head->remote_path, X_OK);
-					sleng_debug("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
-					unlink(trans_args->up_head->remote_path);
-				}
+					if (access(trans_args->up_head->remote_path, F_OK) == 0)
+					{
+						if (_cp(trans_args->up_head->remote_path, back_path)) {
+							sleng_error("cp1, %s -> %s", trans_args->up_head->remote_path, back_path);
+							// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+							// break;
+						}
+						x_flag = !access(trans_args->up_head->remote_path, X_OK);
+						sleng_debug("[%s@%d]:x_flag = %hhd\n", __func__, __LINE__, x_flag);
+						unlink(trans_args->up_head->remote_path);
+					}
 
-				/* Copy the new file */
-				if (_cp(tmp_path, trans_args->up_head->remote_path)) {
-					sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->remote_path);
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-					break;
-				}
-				if (x_flag) chmod(trans_args->up_head->remote_path, 0755);
-				if (unlink(tmp_path)) {
-					sleng_error("unlink");
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
-					break;
+					/* Copy the new file */
+					if (_cp(tmp_path, trans_args->up_head->remote_path)) {
+						sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->remote_path);
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+						break;
+					}
+					if (x_flag) chmod(trans_args->up_head->remote_path, 0755);
+					if (unlink(tmp_path)) {
+						sleng_error("unlink");
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+						break;
+					}
 				}
 
 				/* Resume the upgraded process */

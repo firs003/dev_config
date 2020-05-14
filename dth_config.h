@@ -102,7 +102,8 @@ typedef struct upgrade_file_head {
 	unsigned char trans_mode;	/**< direction and mode, defined in file_trans_mod enum */
 	unsigned char trans_protocol;
 	unsigned char file_type;
-	unsigned char res[3];
+	unsigned char backup_flag;
+	unsigned char res[2];
 	unsigned short remote_port;
 	unsigned int remote_ip;
 	unsigned int file_size;

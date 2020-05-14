@@ -17,6 +17,15 @@
 #define	DTH_CONFIG_CLIENT_RECVBUF_SIZE	2048
 
 
+typedef struct static_file_desc
+{
+	unsigned char quit_flag;
+	unsigned char debug_flag;
+} STATIC_FD, *PSTATIC_FD;
+
+STATIC_FD static_fd = {0};
+
+
 #if 0
 /**********************************************************************
  * function:print info in format like Ultra Edit
@@ -135,6 +144,7 @@ unsigned int get_local_ip(const char *ifname) {
 
 static int _file_transfer(const char *path, const unsigned int dest_ip, const unsigned short dest_port)
 {
+	PSTATIC_FD fd = &static_fd;
 	int ret = 0;
 	FILE *fp = NULL;
 	int client_socket = -1;
@@ -228,7 +238,7 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 				break;
 			}
 			send_total += sendlen;
-			// sleng_debug("sendlen=%d, read_len=%d, send_total=%d(%d), file_size=%u\n", sendlen, readlen, send_total, send_total * 100, file_size);
+			if (fd->debug_flag) sleng_debug("sendlen=%d, read_len=%d, send_total=%llu(%llu), file_size=%u\n", sendlen, readlen, send_total, send_total * 100, file_size);
 			printf("\b\b\b\b%3llu%%", send_total * 100 / file_size);
 			fflush(stdout);
 		}
@@ -288,6 +298,7 @@ enum long_opt_val {
 
 int main(int argc, char const *argv[])
 {
+	PSTATIC_FD fd = &static_fd;
 	/*
 	 * -b broadcast for self report
 	 *
@@ -312,7 +323,7 @@ int main(int argc, char const *argv[])
 	unsigned char sendbuf[DTH_CONFIG_CLIENT_SENDBUF_SIZE];
 	unsigned char recvbuf[DTH_CONFIG_CLIENT_RECVBUF_SIZE];
 	unsigned int dest_ip = 0;
-	const char short_options[] = "bu:p:m:n:l:r:";
+	const char short_options[] = "bu:p:m:n:l:r:d";
 	const struct option long_options[] = {
 		{"broadcast",	no_argument,		NULL,	'b'},
 		{"restart",		required_argument,	NULL,	LONG_OPT_VAL_RESTART},
@@ -336,6 +347,7 @@ int main(int argc, char const *argv[])
 		{"netset-gw",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_GW},
 		{"netset-mask",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_MASK},
 		{"netset-dhcp",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_DHCP},
+		{"debug", 		no_argument, 		NULL, 	'd'},
 		{0, 0, 0, 0}
 	};
 	int opt, index, recvlen, sendlen;
@@ -476,6 +488,11 @@ int main(int argc, char const *argv[])
 			} else {
 				sleng_error("inet_aton");
 			}
+			break;
+		}
+		case 'd' :
+		{
+			fd->debug_flag = 1;
 			break;
 		}
 		default :

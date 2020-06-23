@@ -131,7 +131,8 @@ static int load_params_from_file(const char *path, network_params_t *params_arra
 				sprintf(params_array[i].ifname, "eth%d", eth_index);
 				params_array[i].up = 1;
 				fgets_skip_comment(buf, sizeof(buf), fp);
-				strncpy(compare, "iface eth0 inet ", strlen("iface eth0 inet "));
+				// strncpy(compare, "iface eth0 inet ", strlen("iface eth0 inet "));
+				strncpy(compare, "iface eth0 inet ", sizeof(compare));
 				if (eth_index == 1) compare[strlen("iface eth")] = '1';
 				if (strncmp(buf, compare, strlen(compare)) == 0) {
 					const char *mode = buf + strlen(compare);
@@ -1008,7 +1009,7 @@ static void *file_trans_thread_func(void *args) {
 				}
 				else if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_TFTP)
 				{
-					char cmd[256] = {0,};
+					char cmd[512] = {0,};
 
 					memset(&addr, 0, sizeof(struct in_addr));
 					addr.s_addr = trans_args->up_head->remote_ip;

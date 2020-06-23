@@ -18,7 +18,7 @@ PC_OBJS=dth_client.o
 SHARE_DIR=../../share/
 BIN_FILE=~/bin/dthc
 
-all:arm mips pc
+all:pc arm mips
 arm:$(ARM_TARGET) $(ARM_CLIENT)
 mips:$(MIPS_TARGET)
 pc:$(PC_TARGET)

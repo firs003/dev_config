@@ -2,8 +2,8 @@ ARM_COMPILER_PRE=arm-linux-gnueabihf-
 MIPS_COMPILER_PRE=mipsel-openwrt-linux-
 X86_COMPILER_PRE=
 CC=gcc
-CFLAGS=-Wall -Werror -I../util/inc
-LDFLAGS=-L../util/out
+CFLAGS=-Wall -I./inc
+LDFLAGS=-L.
 STRIP=strip
 
 ARM_TARGET=dth_config_server.arm
@@ -29,7 +29,7 @@ $(ARM_TARGET):$(ARM_OBJS)
 	@cp $@ $(SHARE_DIR)
 	@echo "cp $@ to share_dir"
 
-$(ARM_OBJS):dth_config_server.c dth_config.h
+$(ARM_OBJS):dth_config_server.c inc/dth_config.h
 	$(ARM_COMPILER_PRE)$(CC) $(CFLAGS) -o $@ -c $<
 
 $(ARM_CLIENT):$(ARM_CLIENT_OBJS)
@@ -38,7 +38,7 @@ $(ARM_CLIENT):$(ARM_CLIENT_OBJS)
 	@cp $@ $(SHARE_DIR)
 	@echo "cp $@ to share_dir"
 
-$(ARM_CLIENT_OBJS):dth_client.c dth_config.h
+$(ARM_CLIENT_OBJS):dth_client.c inc/dth_config.h
 	$(ARM_COMPILER_PRE)$(CC) $(CFLAGS) -o $@ -c $<
 
 $(MIPS_TARGET):$(MIPS_OBJS)
@@ -47,7 +47,7 @@ $(MIPS_TARGET):$(MIPS_OBJS)
 	@cp $@ $(SHARE_DIR)
 	@echo "cp $@ to share_dir"
 
-$(MIPS_OBJS):dth_config_server.c dth_config.h
+$(MIPS_OBJS):dth_config_server.c inc/dth_config.h
 	$(MIPS_COMPILER_PRE)$(CC) $(CFLAGS) -o $@ -c $<
 
 $(PC_TARGET):$(PC_OBJS)
@@ -55,7 +55,7 @@ $(PC_TARGET):$(PC_OBJS)
 	@cp $@ $(BIN_FILE)
 	@echo "cp $@ to bin_dir"
 
-dth_client.o:dth_client.c dth_config.h
+dth_client.o:dth_client.c inc/dth_config.h
 
 .PHONY:clean
 clean:

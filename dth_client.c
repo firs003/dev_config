@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <arpa/inet.h>
@@ -19,8 +20,9 @@
 
 typedef struct static_file_desc
 {
-	unsigned char quit_flag;
-	unsigned char debug_flag;
+	int quit_flag : 1;
+	int debug_flag : 1;
+	int use_tcp : 1;
 } STATIC_FD, *PSTATIC_FD;
 
 STATIC_FD static_fd = {0};
@@ -80,6 +82,224 @@ static inline unsigned char atox(const char *str) {
 }
 
 #endif
+
+static int _dth_config_tcp_connect(uint32_t src_ip, uint16_t src_port, uint32_t dst_ip, uint16_t dst_port, struct timeval *timeout)
+{
+	int ret = 0;
+	int connfd = 0;
+	struct timeval tv = {2, 0};
+	int opt = 1;
+	struct sockaddr_in client_addr, server_addr;
+
+	do
+	{
+		if (timeout)
+		{
+			tv = *timeout;
+		}
+
+		connfd = socket(AF_INET, SOCK_STREAM, 0);
+		if (connfd == -1)
+		{
+			sleng_error("socket error");;
+			ret = -1;
+			break;
+		}
+
+		if (setsockopt(connfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&opt, sizeof(int)) < 0)
+		{
+			sleng_error("setsockopt reuse");
+			ret = -1;
+			break;
+		}
+		if (setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, (const void *)&tv, sizeof(struct timeval)) < 0)
+		{
+			sleng_error("setsockopt timeout");
+			ret = -1;
+			break;
+		}
+
+		bzero(&client_addr, sizeof(client_addr));
+		client_addr.sin_family = AF_INET;
+		client_addr.sin_addr.s_addr = (src_ip > 0) ? src_ip : htons(INADDR_ANY);
+		client_addr.sin_port = (src_port > 1024) ? src_port : htons(0);
+		//把客户机的socket和客户机的socket地址结构联系起来
+		if (bind(connfd, (const struct sockaddr *)&client_addr, sizeof(client_addr)))
+		{
+			sleng_error("Client Bind src_port Failed!");
+			ret = -1;
+			break;
+		}
+
+		bzero(&server_addr, sizeof(server_addr));
+		server_addr.sin_family = AF_INET;
+		server_addr.sin_addr.s_addr = dst_ip;
+		server_addr.sin_port = htons(dst_port);
+		if (connect(connfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+		{
+			sleng_error("Can Not Connect To %08x : %hu!", server_addr.sin_addr.s_addr, dst_port);
+			ret = -1;
+			break;
+		}
+
+		ret = connfd;
+	} while (0);
+
+	if (ret == -1 && connfd > 0)
+	{
+		close(connfd);
+		connfd = -1;
+	}
+
+	return ret;
+}	/* End of _dth_config_tcp_connect() */
+
+static int _dth_config_udp_socket(uint32_t src_ip, uint16_t src_port, struct timeval *timeout)
+{
+	int ret = 0;
+	int sockfd = 0;
+	struct timeval tv = {2, 0};
+	struct sockaddr_in local_addr;
+	int opt;
+
+	do
+	{
+		if (timeout)
+		{
+			tv = *timeout;
+		}
+
+		sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+		if (-1 == sockfd)
+		{
+			sleng_error("socket error");
+			ret = -1;
+			break;
+		}
+		memset(&local_addr, 0, sizeof(struct sockaddr_in));
+		local_addr.sin_family = AF_INET;
+		local_addr.sin_addr.s_addr = (src_ip > 0) ? src_ip : htons(INADDR_ANY);
+		local_addr.sin_port = (src_port > 1024) ? src_port : htons(0);
+		if (bind(sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1)
+		{
+			sleng_debug("unicast bind return %d:%s\n", errno, strerror(errno));
+			ret = -1;
+			break;
+		}
+
+		opt = 1;
+		// sleng_debug("%s:%d\n", __FILE__, __LINE__);
+		if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&opt, sizeof(opt)) < 0)
+		{
+			sleng_error("set setsockopt failed");
+			ret = -1;
+			break;
+		}
+		if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const void *)&tv, sizeof(tv)) < 0)		/* timeout 2s */
+		{
+			sleng_error("setsockopt timeout");
+			ret = -1;
+			break;
+		}
+
+		ret = sockfd;
+	} while (0);
+
+	if (ret == -1 && sockfd > 0)
+	{
+		close(sockfd);
+		sockfd = -1;
+	}
+
+	return ret;
+}	/* End of _dth_config_udp_socket() */
+
+static int _dth_config_udp_broadcast_setup(uint16_t dst_port, struct sockaddr_in *out)
+{
+	int ret = 0;
+	int bcst_sockfd = 0;
+	int sockopt = 1;
+
+	do
+	{
+		if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+			sleng_error("refresh socket");
+			ret = -1;
+			break;
+		}
+		sockopt = 1;
+		if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
+			sleng_error("set setsockopt failed");
+			ret = -1;
+			break;
+		}
+
+		memset(&out, 0, sizeof(struct sockaddr_in));
+		out->sin_family = AF_INET;
+		out->sin_addr.s_addr = INADDR_BROADCAST;
+		out->sin_port = htons(dst_port);
+
+		ret = bcst_sockfd;
+	} while (0);
+
+	if (ret == -1 && bcst_sockfd > 0)
+	{
+		close(bcst_sockfd);
+		bcst_sockfd = -1;
+	}
+
+	return ret;
+}	/* End of _dth_config_udp_broadcast_setup() */
+
+
+static ssize_t _dth_config_recv_msg(int prot, int sockfd, void *buf, size_t buf_size, int flags, struct sockaddr *addr, socklen_t *addrlen)
+{
+	ssize_t ret = 0;
+
+	do
+	{
+		switch (prot)
+		{
+		case SOCK_DGRAM:
+			ret = recvfrom(sockfd, buf, buf_size, flags, addr, addrlen);
+			break;
+
+		case SOCK_STREAM:
+			ret = recv(sockfd, buf, buf_size, flags);
+			sleng_debug("tcp recv ret = %zd\n", ret);
+			break;
+
+		default:
+			break;
+		}
+	} while (0);
+
+	return ret;
+}	/* End of _dth_recv_msg() */
+
+static ssize_t _dth_config_send_msg(int prot, int sockfd, void *buf, size_t buf_size, int flags, struct sockaddr *addr, socklen_t addrlen)
+{
+	ssize_t ret = 0;
+
+	do
+	{
+		switch (prot)
+		{
+		case SOCK_DGRAM:
+			ret = sendto(sockfd, buf, buf_size, flags, addr, addrlen);
+			break;
+
+		case SOCK_STREAM:
+			ret = send(sockfd, buf, buf_size, flags);
+			break;
+
+		default:
+			break;
+		}
+	} while (0);
+
+	return ret;
+}	/* End of _dth_send_msg() */
 
 #define DTH_CONFIG_SERVER_TMP_IFR_COUNT 8
 
@@ -142,7 +362,7 @@ unsigned int get_local_ip(const char *ifname) {
 	return ret;
 }
 
-static int _file_transfer(const char *path, const unsigned int dest_ip, const unsigned short dest_port)
+static int _file_transfer(const char *path, const unsigned int dst_ip, const unsigned short dest_port)
 {
 	PSTATIC_FD fd = &static_fd;
 	int ret = 0;
@@ -197,7 +417,7 @@ static int _file_transfer(const char *path, const unsigned int dest_ip, const un
 
 		bzero(&server_addr, sizeof(server_addr));
 		server_addr.sin_family = AF_INET;
-		server_addr.sin_addr.s_addr = dest_ip;
+		server_addr.sin_addr.s_addr = dst_ip;
 		server_addr.sin_port = htons(dest_port);
 		if ((ret = connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
 		{
@@ -317,14 +537,28 @@ int main(int argc, char const *argv[])
 	int ret;
 	unsigned short src_port = DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT;
 	unsigned short dst_port = DTH_CONFIG_BOARD_DEFAULT_UDP_PORT;
-	int ucst_sockfd = -1, sockopt;
-	struct sockaddr_in local_addr, remote_addr;
+	int ucst_sockfd = -1;
+	struct sockaddr_in remote_addr;
 	socklen_t	remote_addr_len = sizeof(struct sockaddr);
 	struct timeval tv = {2, 0};
 	unsigned char sendbuf[DTH_CONFIG_CLIENT_SENDBUF_SIZE];
 	unsigned char recvbuf[DTH_CONFIG_CLIENT_RECVBUF_SIZE];
-	unsigned int dest_ip = 0;
-	const char short_options[] = "bu:p:m:n:l:r:d";
+	unsigned int dst_ip = 0;
+	upgrade_head_t uphead = {
+		.sync = {'d', 'u', 'f', '\0'},
+		.md5 = {0, },
+		.trans_mode = FILE_TRANS_MODE_R2L_POSITIVE,
+		.trans_protocol = FILE_TRANS_PROTOCOL_TFTP,
+		.backup_flag = 1,
+		.remote_port = 0,
+		.remote_ip = get_local_ip(NULL),
+		.remote_path = {0, },
+		.local_path = {0, },
+		.prev_cmd = {0, },
+		.post_cmd = {0, },
+	};
+
+	const char short_options[] = "bu:p:m:n:l:r:dt";
 	const struct option long_options[] = {
 		{"broadcast",	no_argument,		NULL,	'b'},
 		{"restart",		required_argument,	NULL,	LONG_OPT_VAL_RESTART},
@@ -348,46 +582,12 @@ int main(int argc, char const *argv[])
 		{"netset-gw",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_GW},
 		{"netset-mask",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_MASK},
 		{"netset-dhcp",	required_argument,	NULL,	LONG_OPT_VAL_NETSET_DHCP},
+		{"tcp",			no_argument,		NULL,	't'},
 		{"debug", 		no_argument, 		NULL, 	'd'},
 		{"no-backup",	no_argument, 		NULL, 	LONG_OPT_VAL_NO_BACKUP},
 		{0, 0, 0, 0}
 	};
 	int opt, index, recvlen, sendlen;
-	upgrade_head_t uphead = {
-		.sync = {'d', 'u', 'f', '\0'},
-		.md5 = {0, },
-		.trans_mode = FILE_TRANS_MODE_R2L_POSITIVE,
-		.trans_protocol = FILE_TRANS_PROTOCOL_TFTP,
-		.backup_flag = 1,
-		.remote_port = 0,
-		.remote_ip = get_local_ip(NULL),
-		.remote_path = {0, },
-		.local_path = {0, },
-		.prev_cmd = {0, },
-		.post_cmd = {0, },
-	};
-
-	ucst_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (-1 == ucst_sockfd) {
-		sleng_error("socket error");
-		goto cleanup;
-	}
-	memset(&local_addr, 0, sizeof(struct sockaddr_in));
-	local_addr.sin_family = AF_INET;
-	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	local_addr.sin_port = htons(src_port);
-	if (bind(ucst_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
-		sleng_debug("unicast bind return %d:%s\n", errno, strerror(errno));
-		goto cleanup;
-	}
-	sockopt = 1;
-	// sleng_debug("%s:%d\n", __FILE__, __LINE__);
-	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) < 0 ) {
-		sleng_error("set setsockopt failed");
-	}
-	if (setsockopt(ucst_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv)) < 0) {	//2s timeout
-		sleng_error("setsockopt timeout");
-	}
 
 	do {
 		opt = getopt_long(argc, (char *const *)argv, short_options, long_options, &index);
@@ -403,7 +603,7 @@ int main(int argc, char const *argv[])
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
-				dest_ip = addr.s_addr;
+				dst_ip = addr.s_addr;
 				do_flag.restart = 1;
 			} else {
 				sleng_error("inet_aton");
@@ -414,7 +614,7 @@ int main(int argc, char const *argv[])
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
-				dest_ip = addr.s_addr;
+				dst_ip = addr.s_addr;
 				do_flag.reboot = 1;
 			} else {
 				sleng_error("inet_aton");
@@ -425,7 +625,7 @@ int main(int argc, char const *argv[])
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
-				dest_ip = addr.s_addr;
+				dst_ip = addr.s_addr;
 				do_flag.poweroff = 1;
 			} else {
 				sleng_error("inet_aton");
@@ -443,7 +643,7 @@ int main(int argc, char const *argv[])
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
-				dest_ip = addr.s_addr;
+				dst_ip = addr.s_addr;
 				do_flag.upgrade = 1;
 			} else {
 				sleng_error("inet_aton");
@@ -486,7 +686,7 @@ int main(int argc, char const *argv[])
 			struct in_addr addr;
 			memset(&addr, 0, sizeof(struct in_addr));
 			if (inet_aton(optarg, &addr)) {
-				dest_ip = addr.s_addr;
+				dst_ip = addr.s_addr;
 				do_flag.netset = 1;
 			} else {
 				sleng_error("inet_aton");
@@ -498,6 +698,10 @@ int main(int argc, char const *argv[])
 			fd->debug_flag = 1;
 			break;
 		}
+		case 't' :
+		{
+			fd->use_tcp = 1;
+		}
 		case LONG_OPT_VAL_NO_BACKUP : {
 			uphead.backup_flag = 0;
 			break;
@@ -508,6 +712,20 @@ int main(int argc, char const *argv[])
 		}
 	} while (1);
 
+	if (fd->use_tcp)
+	{
+		dst_port = DTH_CONFIG_BOARD_DEFAULT_TCP_PORT;
+		ucst_sockfd = _dth_config_tcp_connect(0, 0, dst_ip, dst_port, NULL);
+	}
+	else
+	{
+		ucst_sockfd = _dth_config_udp_socket(0, src_port, NULL);
+	}
+	if (-1 == ucst_sockfd) {
+		sleng_error("socket error");
+		goto cleanup;
+	}
+
 	// sleng_debug("%s:%d\n", __func__, __LINE__);
 
 	if (do_flag.report) {
@@ -515,15 +733,13 @@ int main(int argc, char const *argv[])
 		struct sockaddr_in bcst_addr;
 		int bcst_sockfd = -1;
 		do {
-			if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-				sleng_error("refresh socket");
+			if (fd->use_tcp)
+			{
+				sleng_warning("ip scan not support tcp\n");
 				break;
 			}
-			sockopt = 1;
-			if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&sockopt, sizeof(sockopt))) {
-				sleng_error("set setsockopt failed");
-				break;
-			}
+
+			bcst_sockfd = _dth_config_udp_broadcast_setup(dst_port, &bcst_addr);
 			dth_head_t *dth_head = (dth_head_t *)sendbuf;
 			dth_head->sync[0] = 'd';
 			dth_head->sync[1] = 't';
@@ -532,10 +748,6 @@ int main(int argc, char const *argv[])
 			dth_head->type = DTH_REQ_REPORT_SELF;
 			dth_head->length = 0;
 
-			memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
-			bcst_addr.sin_family = AF_INET;
-			bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
-			bcst_addr.sin_port = htons(dst_port);
 			ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
 			if (ret < 0) {
 				sleng_error("sendto self_report req failed");
@@ -547,7 +759,7 @@ int main(int argc, char const *argv[])
 				int i;
 				dth_head_t *dth_head = (dth_head_t *)recvbuf;
 				network_params_t *param = NULL;
-				recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 				if (recvlen <= 0) {
 					break;
 				}
@@ -590,9 +802,9 @@ int main(int argc, char const *argv[])
 			dth_head->type = DTH_REQ_RESTART;
 			dth_head->length = 0;
 
-			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
@@ -603,7 +815,7 @@ int main(int argc, char const *argv[])
 				sleng_error("setsockopt timeout");
 			}
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;
@@ -634,16 +846,16 @@ int main(int argc, char const *argv[])
 			dth_head->type = DTH_REQ_REBOOT;
 			dth_head->length = 0;
 
-			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;
@@ -670,16 +882,16 @@ int main(int argc, char const *argv[])
 			dth_head->type = DTH_REQ_POWEROFF;
 			dth_head->length = 0;
 
-			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;
@@ -714,9 +926,9 @@ int main(int argc, char const *argv[])
 			memcpy(sendbuf+sizeof(dth_head_t), &uphead, dth_head->length);
 			// sleng_debug("length=%lu\n", sizeof(upgrade_head_t));
 
-			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
@@ -725,18 +937,18 @@ int main(int argc, char const *argv[])
 			/* Transfer file to board via custom tcp protocol */
 			if (uphead.trans_mode == FILE_TRANS_MODE_R2L_NEGATIVE && uphead.trans_protocol == FILE_TRANS_PROTOCOL_USER)
 			{
-				recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 				dth_head = (dth_head_t *)recvbuf;
 				if (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_READY)
 				{
-					_file_transfer(uphead.local_path, dest_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+					_file_transfer(uphead.local_path, dst_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
 				}
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
-				sleng_error("recvfrom");
+				sleng_error("_dth_config_recv_msg, recvlen(%d)", recvlen);
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
@@ -780,16 +992,16 @@ int main(int argc, char const *argv[])
 				params.up = params.dhcp_flag = 0;
 				memcpy(sendbuf+sizeof(dth_head_t), &params, sizeof(params));
 			}
-			remote_addr.sin_addr.s_addr = dest_ip;
+			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;

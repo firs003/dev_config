@@ -11,6 +11,7 @@
 #include <linux/route.h>
 #include <signal.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <fcntl.h>
 #include <libgen.h>
 #include <errno.h>
@@ -790,12 +791,122 @@ static int _cp(const char *src, const char *dst) {
 	return ret;
 }
 
+static int _dth_config_tcp_listen_fd_setup(unsigned int ipaddr, unsigned short port, struct timeval *timeout)
+{
+	int ret = 0;
+	int listenfd = 0;
+	int opt = 1;
+	struct timeval tv = {2, 0};
+	struct sockaddr_in servaddr;
+
+	do
+	{
+		if (timeout)
+		{
+			tv = *timeout;
+		}
+
+		if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+			sleng_error("socket");
+			ret = -1;
+			break;
+		}
+
+		if ( setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0 ) {
+			sleng_error("setsockopt reuse");
+			ret = -1;
+			break;
+		}
+		if (setsockopt(listenfd, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(struct timeval)) < 0) {
+			sleng_error("setsockopt timeout");
+			ret = -1;
+			break;
+		}
+
+		bzero(&servaddr, sizeof(servaddr));
+		memset(&servaddr, 0, sizeof(struct sockaddr_in));
+		servaddr.sin_family = AF_INET;
+		servaddr.sin_addr.s_addr = (ipaddr) ? ipaddr : htonl(INADDR_ANY);
+		servaddr.sin_port = htons(port);
+		if (bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1) {
+			sleng_error("bind");
+			ret = -1;
+			break;
+		}
+
+		if (listen(listenfd, 10) < 0) {
+			sleng_error("listen");
+			ret = -1;
+		}
+
+		ret = listenfd;
+	} while (0);
+
+	if (ret == -1 && listenfd > 0)
+	{
+		close(listenfd);
+		listenfd = -1;
+	}
+	return ret;
+}	/* End of _dth_config_set_tcp_listen_fd() */
+
+
+static ssize_t _dth_config_recv_msg(int prot, int sockfd, void *buf, size_t buf_size, int flags, struct sockaddr *addr, socklen_t *addrlen)
+{
+	ssize_t ret = 0;
+
+	do
+	{
+		switch (prot)
+		{
+		case SOCK_DGRAM:
+			ret = recvfrom(sockfd, buf, buf_size, flags, addr, addrlen);
+			break;
+
+		case SOCK_STREAM:
+			ret = recv(sockfd, buf, buf_size, flags);
+			break;
+
+		default:
+			break;
+		}
+	} while (0);
+
+	return ret;
+}	/* End of _dth_recv_msg() */
+
+static ssize_t _dth_config_send_msg(int prot, int sockfd, void *buf, size_t buf_size, int flags, struct sockaddr *addr, socklen_t addrlen)
+{
+	ssize_t ret = 0;
+
+	do
+	{
+		switch (prot)
+		{
+		case SOCK_DGRAM:
+			ret = sendto(sockfd, buf, buf_size, flags, addr, addrlen);
+			break;
+
+		case SOCK_STREAM:
+			ret = send(sockfd, buf, buf_size, flags);
+			break;
+
+		default:
+			break;
+		}
+	} while (0);
+
+	return ret;
+}	/* End of _dth_send_msg() */
+
 struct file_trans_args {
 	pthread_mutex_t *mutex;
 	upgrade_head_t *up_head;
 	unsigned char *sendbuf;
 	int send_sock;
 	struct sockaddr_in remote_addr;
+	int protocol;
+	sem_t *sem_ready;
 } file_trans_args_t;
 
 #define DOWNLOAD_DIR "/disthen/download"
@@ -936,11 +1047,12 @@ static void *file_trans_thread_func(void *args) {
 
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
 					pthread_mutex_lock(trans_args->mutex);
-					ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+					ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
-						sleng_error("sendto self_report ack failed");
+						sleng_error("send file_trans ready ack failed");
 					}
 					pthread_mutex_unlock(trans_args->mutex);
+					sem_post(trans_args->sem_ready);
 
 					client_fd = accept(listen_fd, (struct sockaddr *)&address, &addr_len);
 					if (client_fd < 0) {
@@ -1225,7 +1337,7 @@ static void *file_trans_thread_func(void *args) {
 
 					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
 					pthread_mutex_lock(trans_args->mutex);
-					ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+					ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
 						sleng_error("sendto self_report ack failed");
 					}
@@ -1347,9 +1459,9 @@ static void *file_trans_thread_func(void *args) {
 
 	//send back file trans result
 	pthread_mutex_lock(trans_args->mutex);
-	ret = sendto(trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+	ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
 	if (ret < 0) {
-		sleng_error("sendto self_report ack failed");
+		sleng_error("send self_report ack failed");
 	}
 	pthread_mutex_unlock(trans_args->mutex);
 	sleng_debug("Upgrade [%s] %s!\n", trans_args->up_head->local_path, (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
@@ -1357,19 +1469,285 @@ static void *file_trans_thread_func(void *args) {
 	return (void *)ret;
 }
 
-typedef struct udp_thread_arg
+static int _dth_config_do_request(int prot, int sockfd, const unsigned char *recvbuf, int recvlen, pthread_mutex_t *send_mutex, struct sockaddr_in *remote_addr, socklen_t remote_addr_len)
+{
+	PSTATIC_FD fd = &static_fd;
+	int ret = 0;
+	unsigned char sendbuf[DTH_CONFIG_SERVER_SENDBUF_SIZE] = {0, };
+	pthread_t file_trans_tid;
+	struct file_trans_args trans_args;
+
+	do
+	{
+		if (recvlen >= 0 && recvlen >= sizeof(dth_head_t))
+		{
+			dth_head_t *dth_head = (dth_head_t *)recvbuf;
+			if (fd->debug_flag)
+				sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr->sin_addr.s_addr, ntohs(remote_addr->sin_port));
+			if (dth_head->sync[0] != 'd' || dth_head->sync[1] != 't' || dth_head->sync[2] != 'h' || dth_head->sync[3] != '\0')
+			{
+				// if(fd->debug_flag) sleng_debug("bad sync, just drop! dth ... ... ... ...\n");
+				continue;
+			}
+			// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
+			switch (dth_head->type)
+			{
+			case DTH_REQ_RESTART:
+			{
+				dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type = DTH_ACK_RESTART;
+				dth_head->length = 0;
+				sleng_debug("Restart Service");
+				dth_head->res[0] = system("service dmservice restart");
+				pthread_mutex_lock(send_mutex);
+				ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+				if (ret < 0)
+				{
+					sleng_error("sendto self_report ack failed");
+				}
+				pthread_mutex_unlock(send_mutex);
+				break;
+			}
+
+			case DTH_REQ_REBOOT:
+			{
+				dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type = DTH_ACK_REBOOT;
+				dth_head->length = 0;
+				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+				pthread_mutex_lock(send_mutex);
+				ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+				if (ret < 0)
+				{
+					sleng_error("sendto self_report ack failed");
+				}
+				pthread_mutex_unlock(send_mutex);
+				sleng_debug("Rebooting");
+				system("reboot");
+				break;
+			}
+
+			case DTH_REQ_POWEROFF:
+			{
+				dth_head = (dth_head_t *)sendbuf;
+				dth_head->sync[0] = 'd';
+				dth_head->sync[1] = 't';
+				dth_head->sync[2] = 'h';
+				dth_head->sync[3] = '\0';
+				dth_head->type = DTH_ACK_POWEROFF;
+				dth_head->length = 0;
+				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+				pthread_mutex_lock(send_mutex);
+				ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+				if (ret < 0)
+				{
+					sleng_error("sendto self_report ack failed");
+				}
+				pthread_mutex_unlock(send_mutex);
+				sleng_debug("Poweroff");
+				system("poweroff");
+				break;
+			}
+
+			case DTH_REQ_REPORT_SELF:
+			{
+				if (prot == SOCK_DGRAM)
+				{
+					struct sockaddr_in bcst_addr;
+					int sockopt = 0;
+					int bcst_sockfd = -1, if_num = get_if_num();
+					do
+					{
+						if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+						{
+							sleng_error("refresh socket");
+							break;
+						}
+						sockopt = 1;
+						if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char *)&sockopt, sizeof(sockopt)))
+						{
+							sleng_error("set setsockopt failed");
+							break;
+						}
+						memset(sendbuf, 0, sizeof(sendbuf)); //Clean the sendbuf in order to make sure client can parse to string in python
+						dth_head = (dth_head_t *)sendbuf;
+						dth_head->sync[0] = 'd';
+						dth_head->sync[1] = 't';
+						dth_head->sync[2] = 'h';
+						dth_head->sync[3] = '\0';
+						dth_head->type = DTH_ACK_REPORT_SELF;
+						dth_head->length = sizeof(network_params_t) * if_num;
+						if (fd->debug_flag)
+							sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
+						if (fd->debug_flag)
+							print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
+						if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0)
+						{
+							sleng_error("Get working if status failed");
+							break;
+						}
+						if (fd->debug_flag)
+							print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
+
+						memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
+						bcst_addr.sin_family = AF_INET;
+						bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
+						bcst_addr.sin_port = htons(DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT);
+						pthread_mutex_lock(send_mutex);
+						if (fd->debug_flag)
+							print_in_hex(sendbuf, sizeof(dth_head_t) + dth_head->length, "sendbuf=", NULL);
+						ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
+						if (ret < 0)
+						{
+							sleng_error("sendto self_report ack failed");
+							pthread_mutex_unlock(send_mutex);
+							break;
+						}
+						pthread_mutex_unlock(send_mutex);
+						sleng_debug("sendto return %d\n", ret);
+					} while (0);
+					if (bcst_sockfd > 0)
+						close(bcst_sockfd);
+				}
+				else if (prot == SOCK_STREAM)
+				{
+					int if_num = get_if_num();
+					memset(sendbuf, 0, sizeof(sendbuf)); //Clean the sendbuf in order to make sure client can parse to string in python
+					dth_head = (dth_head_t *)sendbuf;
+					dth_head->sync[0] = 'd';
+					dth_head->sync[1] = 't';
+					dth_head->sync[2] = 'h';
+					dth_head->sync[3] = '\0';
+					dth_head->type = DTH_ACK_REPORT_SELF;
+					dth_head->length = sizeof(network_params_t) * if_num;
+					if (fd->debug_flag)
+						sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
+					if (fd->debug_flag)
+						print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
+					if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0)
+					{
+						sleng_error("Get working if status failed");
+						break;
+					}
+					if (fd->debug_flag)
+						print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
+
+					pthread_mutex_lock(send_mutex);
+					ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+					if (ret < 0)
+					{
+						sleng_error("sendto self_report ack failed");
+					}
+					pthread_mutex_unlock(send_mutex);
+				}
+
+				break;
+			}
+
+			case DTH_REQ_FILE_TRANS:
+			{
+				sem_t sem_ready;
+				if (sem_init(&sem_ready, 0, 0) == -1)
+				{
+					sleng_error("sem_init for sem_ready error");;
+					ret = -1;
+					break;
+				}
+
+				// sleng_debug("length=%u, sizeof(upgrade_head_t)=%d, payload_head=%s\n", dth_head->length, sizeof(upgrade_head_t), &recvbuf[sizeof(dth_head_t)]);
+				if (dth_head->length == sizeof(upgrade_head_t) && recvbuf[sizeof(dth_head_t) + 0] == 'd' && recvbuf[sizeof(dth_head_t) + 1] == 'u' && recvbuf[sizeof(dth_head_t) + 2] == 'f' && recvbuf[sizeof(dth_head_t) + 3] == '\0')
+				{
+					trans_args.mutex       = send_mutex;
+					trans_args.up_head     = (upgrade_head_t *)(recvbuf + sizeof(dth_head_t));
+					trans_args.sendbuf     = sendbuf;
+					trans_args.send_sock   = sockfd;
+					trans_args.remote_addr = *remote_addr;
+					trans_args.protocol    = prot;
+					trans_args.sem_ready   = &sem_ready;
+					if (pthread_create(&file_trans_tid, NULL, file_trans_thread_func, &trans_args) < 0)
+					{
+						sleng_error("create file_trans_thread failed");
+						dth_head = (dth_head_t *)sendbuf;
+						dth_head->sync[0] = 'd';
+						dth_head->sync[1] = 't';
+						dth_head->sync[2] = 'h';
+						dth_head->sync[3] = '\0';
+						dth_head->type = DTH_ACK_FILE_TRANS;
+						dth_head->length = 0;
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_THREAD_FAILED;
+						pthread_mutex_lock(send_mutex);
+						ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+						if (ret < 0)
+						{
+							sleng_error("sendto self_report ack failed");
+						}
+						pthread_mutex_unlock(send_mutex);
+					}
+					sem_wait(&sem_ready);
+				}
+				break;
+			}
+
+			case DTH_REQ_SET_NETWORK_PARAMS:
+			{
+				if (dth_head->length == sizeof(network_params_t))
+				{
+					network_params_t *params = (network_params_t *)(recvbuf + sizeof(dth_head_t));
+					dth_head = (dth_head_t *)sendbuf;
+					dth_head->sync[0] = 'd';
+					dth_head->sync[1] = 't';
+					dth_head->sync[2] = 'h';
+					dth_head->sync[3] = '\0';
+					dth_head->type = DTH_ACK_SET_NETWORK_PARAMS;
+					dth_head->length = 0;
+					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+					print_in_hex(recvbuf, sizeof(dth_head_t) + sizeof(network_params_t), NULL, NULL);
+					if (network_modify(params, NETWORK_PARAMS_FILE_PATH))
+					{
+						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_ERR;
+					}
+					pthread_mutex_lock(send_mutex);
+					ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+					if (ret < 0)
+					{
+						sleng_error("sendto self_report ack failed");
+					}
+					pthread_mutex_unlock(send_mutex);
+				}
+				break;
+			}
+
+			default:
+				if (fd->debug_flag) sleng_debug("Invalid type [%d]\n", dth_head->type);
+			}
+		}
+	} while (0);
+
+	return ret;
+}	/* End of _do_request() */
+
+
+typedef struct thread_arg
 {
 	unsigned int ipaddr;
 	unsigned short port;
-} UDP_THREAD_ARG_S, *PUDP_THREAD_ARG_S;
-#define UDP_THREAD_ARG_S_LEN sizeof(UDP_THREAD_ARG_S)
+} THREAD_ARG_S, *PTHREAD_ARG_S;
+#define THREAD_ARG_S_LEN sizeof(THREAD_ARG_S)
 
-static void *_udp_body(void *arg)
+static void *_dth_config_udp_body(void *arg)
 {
 	PSTATIC_FD fd = &static_fd;
 	void *rc = THREAD_SUCCESS;
-	PUDP_THREAD_ARG_S args = (PUDP_THREAD_ARG_S)arg;
-	int ret = 0;
+	PTHREAD_ARG_S args = (PTHREAD_ARG_S)arg;
+	// int ret = 0;
 	// network_params_t netparams;
 	unsigned int ipaddr = (args && args->ipaddr > 0) ? args->ipaddr : 0;
 	unsigned short port = (args && args->port > 0) ? args->port : DTH_CONFIG_BOARD_DEFAULT_UDP_PORT;
@@ -1377,11 +1755,10 @@ static void *_udp_body(void *arg)
 	struct sockaddr_in local_addr, remote_addr;
 	socklen_t remote_addr_len = sizeof(struct sockaddr);
 	struct timeval tv = {2, 0};
-	unsigned char sendbuf[DTH_CONFIG_SERVER_SENDBUF_SIZE];
+
 	unsigned char recvbuf[DTH_CONFIG_SERVER_RECVBUF_SIZE];
 	pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
-	pthread_t file_trans_tid;
-	struct file_trans_args trans_args;
+
 
 	do
 	{
@@ -1426,7 +1803,8 @@ static void *_udp_body(void *arg)
 			int recvlen;
 
 			recvbuf[0] = recvbuf[1] = recvbuf[2] = recvbuf[3] = 0; //make sure do NOT use the prev value
-			recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			// recvlen = recvfrom(ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg(SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (fd->debug_flag && recvlen >= 0)
 			{
 				sleng_debug("recvlen=%d, sizeof(dth_head_t)=%d, buf=\n", recvlen, sizeof(dth_head_t));
@@ -1435,208 +1813,19 @@ static void *_udp_body(void *arg)
 				// }
 			}
 
-			if (recvlen >= 0 && recvlen >= sizeof(dth_head_t))
-			{
-				dth_head_t *dth_head = (dth_head_t *)recvbuf;
-				if (fd->debug_flag)
-					sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
-				if (dth_head->sync[0] != 'd' || dth_head->sync[1] != 't' || dth_head->sync[2] != 'h' || dth_head->sync[3] != '\0')
-				{
-					// if(fd->debug_flag) sleng_debug("bad sync, just drop! dth ... ... ... ...\n");
+			if (recvlen > 0) {
+				if (recvbuf[0] != 'd' || recvbuf[1] != 't' || recvbuf[2] != 'h' || recvbuf[3] != '\0') {
+					sleng_error("bad message, just drop!\n");
 					continue;
 				}
-				// if (dth_head->length > DTH_CONFIG_SERVER_RECVBUF_SIZE - sizeof(dth_head_t));	//TODO
-				switch (dth_head->type)
+
+				if (fd->debug_flag)
 				{
-				case DTH_REQ_RESTART:
-				{
-					dth_head = (dth_head_t *)sendbuf;
-					dth_head->sync[0] = 'd';
-					dth_head->sync[1] = 't';
-					dth_head->sync[2] = 'h';
-					dth_head->sync[3] = '\0';
-					dth_head->type = DTH_ACK_RESTART;
-					dth_head->length = 0;
-					sleng_debug("Restart Service");
-					dth_head->res[0] = system("service dmservice restart");
-					pthread_mutex_lock(&send_mutex);
-					ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
-					if (ret < 0)
-					{
-						sleng_error("sendto self_report ack failed");
-					}
-					pthread_mutex_unlock(&send_mutex);
-					break;
+					sleng_debug("recvlen=%d, sizeof(dth_head_t)=%d, buf=\n", recvlen, sizeof(dth_head_t));
+					print_in_hex(recvbuf, recvlen, NULL, NULL);
 				}
 
-				case DTH_REQ_REBOOT:
-				{
-					dth_head = (dth_head_t *)sendbuf;
-					dth_head->sync[0] = 'd';
-					dth_head->sync[1] = 't';
-					dth_head->sync[2] = 'h';
-					dth_head->sync[3] = '\0';
-					dth_head->type = DTH_ACK_REBOOT;
-					dth_head->length = 0;
-					// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
-					pthread_mutex_lock(&send_mutex);
-					ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
-					if (ret < 0)
-					{
-						sleng_error("sendto self_report ack failed");
-					}
-					pthread_mutex_unlock(&send_mutex);
-					sleng_debug("Rebooting");
-					system("reboot");
-					break;
-				}
-
-				case DTH_REQ_POWEROFF:
-				{
-					dth_head = (dth_head_t *)sendbuf;
-					dth_head->sync[0] = 'd';
-					dth_head->sync[1] = 't';
-					dth_head->sync[2] = 'h';
-					dth_head->sync[3] = '\0';
-					dth_head->type = DTH_ACK_POWEROFF;
-					dth_head->length = 0;
-					// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
-					pthread_mutex_lock(&send_mutex);
-					ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
-					if (ret < 0)
-					{
-						sleng_error("sendto self_report ack failed");
-					}
-					pthread_mutex_unlock(&send_mutex);
-					sleng_debug("Poweroff");
-					system("poweroff");
-					break;
-				}
-
-				case DTH_REQ_REPORT_SELF:
-				{
-					struct sockaddr_in bcst_addr;
-					int bcst_sockfd = -1, if_num = get_if_num();
-					do
-					{
-						if ((bcst_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-						{
-							sleng_error("refresh socket");
-							break;
-						}
-						sockopt = 1;
-						if (setsockopt(bcst_sockfd, SOL_SOCKET, SO_BROADCAST, (char *)&sockopt, sizeof(sockopt)))
-						{
-							sleng_error("set setsockopt failed");
-							break;
-						}
-						memset(sendbuf, 0, sizeof(sendbuf)); //Clean the sendbuf in order to make sure client can parse to string in python
-						dth_head = (dth_head_t *)sendbuf;
-						dth_head->sync[0] = 'd';
-						dth_head->sync[1] = 't';
-						dth_head->sync[2] = 'h';
-						dth_head->sync[3] = '\0';
-						dth_head->type = DTH_ACK_REPORT_SELF;
-						dth_head->length = sizeof(network_params_t) * if_num;
-						if (fd->debug_flag)
-							sleng_debug("length=%d(%dx%d), sendbuf[8]=%02hhx\n", dth_head->length, sizeof(network_params_t), if_num, sendbuf[8]);
-						if (fd->debug_flag)
-							print_in_hex(sendbuf, sizeof(dth_head_t), "0.sendbuf=", NULL);
-						if (network_getstaus(sendbuf + sizeof(dth_head_t), DTH_CONFIG_SERVER_SENDBUF_SIZE - sizeof(dth_head_t)) < 0)
-						{
-							sleng_error("Get working if status failed");
-							break;
-						}
-						if (fd->debug_flag)
-							print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
-
-						memset(&bcst_addr, 0, sizeof(struct sockaddr_in));
-						bcst_addr.sin_family = AF_INET;
-						bcst_addr.sin_addr.s_addr = INADDR_BROADCAST;
-						bcst_addr.sin_port = htons(DTH_CONFIG_REMOTE_DEFAULT_UDP_PORT);
-						pthread_mutex_lock(&send_mutex);
-						if (fd->debug_flag)
-							print_in_hex(sendbuf, sizeof(dth_head_t) + dth_head->length, "sendbuf=", NULL);
-						ret = sendto(bcst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&bcst_addr, sizeof(struct sockaddr));
-						if (ret < 0)
-						{
-							sleng_error("sendto self_report ack failed");
-							pthread_mutex_unlock(&send_mutex);
-							break;
-						}
-						pthread_mutex_unlock(&send_mutex);
-						sleng_debug("sendto return %d\n", ret);
-					} while (0);
-					if (bcst_sockfd > 0)
-						close(bcst_sockfd);
-					break;
-				}
-
-				case DTH_REQ_FILE_TRANS:
-				{
-					// sleng_debug("length=%u, sizeof(upgrade_head_t)=%d, payload_head=%s\n", dth_head->length, sizeof(upgrade_head_t), &recvbuf[sizeof(dth_head_t)]);
-					if (dth_head->length == sizeof(upgrade_head_t) && recvbuf[sizeof(dth_head_t) + 0] == 'd' && recvbuf[sizeof(dth_head_t) + 1] == 'u' && recvbuf[sizeof(dth_head_t) + 2] == 'f' && recvbuf[sizeof(dth_head_t) + 3] == '\0')
-					{
-						trans_args.mutex = &send_mutex;
-						trans_args.up_head = (upgrade_head_t *)(recvbuf + sizeof(dth_head_t));
-						trans_args.sendbuf = sendbuf;
-						trans_args.send_sock = ucst_sockfd;
-						trans_args.remote_addr = remote_addr;
-						if (pthread_create(&file_trans_tid, NULL, file_trans_thread_func, &trans_args) < 0)
-						{
-							sleng_error("create file_trans_thread failed");
-							dth_head = (dth_head_t *)sendbuf;
-							dth_head->sync[0] = 'd';
-							dth_head->sync[1] = 't';
-							dth_head->sync[2] = 'h';
-							dth_head->sync[3] = '\0';
-							dth_head->type = DTH_ACK_FILE_TRANS;
-							dth_head->length = 0;
-							dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_THREAD_FAILED;
-							pthread_mutex_lock(&send_mutex);
-							ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
-							if (ret < 0)
-							{
-								sleng_error("sendto self_report ack failed");
-							}
-							pthread_mutex_unlock(&send_mutex);
-						}
-					}
-					break;
-				}
-
-				case DTH_REQ_SET_NETWORK_PARAMS:
-				{
-					if (dth_head->length == sizeof(network_params_t))
-					{
-						network_params_t *params = (network_params_t *)(recvbuf + sizeof(dth_head_t));
-						dth_head = (dth_head_t *)sendbuf;
-						dth_head->sync[0] = 'd';
-						dth_head->sync[1] = 't';
-						dth_head->sync[2] = 'h';
-						dth_head->sync[3] = '\0';
-						dth_head->type = DTH_ACK_SET_NETWORK_PARAMS;
-						dth_head->length = 0;
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
-						print_in_hex(recvbuf, sizeof(dth_head_t) + sizeof(network_params_t), NULL, NULL);
-						if (network_modify(params, NETWORK_PARAMS_FILE_PATH))
-						{
-							dth_head->res[0] = DTH_CONFIG_ACK_VALUE_ERR;
-						}
-						pthread_mutex_lock(&send_mutex);
-						ret = sendto(ucst_sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)&remote_addr, sizeof(struct sockaddr));
-						if (ret < 0)
-						{
-							sleng_error("sendto self_report ack failed");
-						}
-						pthread_mutex_unlock(&send_mutex);
-					}
-					break;
-				}
-
-				default:
-					if (fd->debug_flag) sleng_debug("Invalid type [%d]\n", dth_head->type);
-				}
+				_dth_config_do_request(SOCK_DGRAM, ucst_sockfd, recvbuf, recvlen, &send_mutex, &remote_addr, remote_addr_len);
 			}
 		}
 	} while (0);
@@ -1648,12 +1837,88 @@ static void *_udp_body(void *arg)
 	return rc;
 } /* End of _udp_body() */
 
+static void *_dth_config_tcp_body(void *arg)
+{
+	PSTATIC_FD fd = &static_fd;
+	void *rc = THREAD_SUCCESS;
+	PTHREAD_ARG_S args = (PTHREAD_ARG_S)arg;
+	unsigned int ipaddr = (args && args->ipaddr > 0) ? args->ipaddr : 0;
+	unsigned short port = (args && args->port > 0) ? args->port : DTH_CONFIG_BOARD_DEFAULT_TCP_PORT;
+	unsigned char recvbuf[DTH_CONFIG_SERVER_RECVBUF_SIZE];
+	pthread_mutex_t send_mutex = PTHREAD_MUTEX_INITIALIZER;
+	int connfd = -1, listenfd = -1;
+	struct sockaddr_in cliaddr;
+	socklen_t cliaddr_len = sizeof(struct sockaddr_in);
+
+	do
+	{
+		/* Listen fd setup */
+		// if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+		if ((listenfd = _dth_config_tcp_listen_fd_setup(ipaddr, port, NULL)) == -1) {
+			sleng_error("setup listen fd error");
+			rc = THREAD_FAILURE;
+			break;
+		}
+
+		while (!fd->quit_flag)
+		{
+			int recvlen;
+
+			recvbuf[0] = recvbuf[1] = recvbuf[2] = recvbuf[3] = 0; //make sure do NOT use the prev value
+			if (connfd != -1)
+			{
+				close(connfd);
+				connfd = -1;
+			}
+			memset(&cliaddr, 0, sizeof(cliaddr));
+			cliaddr_len = sizeof(cliaddr);
+			connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+			if (connfd == 0 || (connfd == -1 && errno == EAGAIN))
+			{
+				// sleng_debug("accept timeout\n");
+				continue;
+			}
+
+			if (connfd == -1 && errno != EAGAIN)
+			{
+				sleng_error("accept error");
+				rc = THREAD_FAILURE;
+				break;
+			}
+
+			recvlen = _dth_config_recv_msg(SOCK_STREAM, connfd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0, NULL, NULL);
+			if (recvlen > 0) {
+				if (recvbuf[0] != 'd' || recvbuf[1] != 't' || recvbuf[2] != 'h' || recvbuf[3] != '\0') {
+					sleng_error("bad message, just drop!\n");
+					continue;
+				}
+
+				if (fd->debug_flag)
+				{
+					sleng_debug("recvlen=%d, sizeof(dth_head_t)=%d, buf=\n", recvlen, sizeof(dth_head_t));
+					print_in_hex(recvbuf, recvlen, NULL, NULL);
+				}
+
+				_dth_config_do_request(SOCK_STREAM, connfd, recvbuf, recvlen, &send_mutex, &cliaddr, cliaddr_len);
+			}
+
+			close(connfd);
+			connfd = -1;
+		}
+	} while (0);
+
+	if (listenfd >= 0) close(listenfd);
+	if (connfd >= 0) close(connfd);
+	return rc;
+}	/* End of _tcp_body() */
+
+
 int main(int argc, char const *argv[])
 {
 	PSTATIC_FD fd = &static_fd;
 	int ret = 0;
-	pthread_t tid_udp = 0;
-	UDP_THREAD_ARG_S udp_args = {0, 0};
+	pthread_t tid_udp = 0, tid_tcp = 0;
+	THREAD_ARG_S udp_args = {0, 0}, tcp_args = {0, 0};
 	void *thread_ret = THREAD_SUCCESS;
 
 	const char short_options[] = "p:da:";
@@ -1712,16 +1977,27 @@ int main(int argc, char const *argv[])
 	// sleng_debug("%s@%s:%d\n", __FILE__, __func__, __LINE__);
 #endif
 
-	if (pthread_create(&tid_udp, NULL, _udp_body, (void *)&udp_args) == -1)
+	if (pthread_create(&tid_udp, NULL, _dth_config_udp_body, (void *)&udp_args) == -1)
 	{
 		sleng_error("pthread_create for _udp_body error");
 		tid_udp = -1;
 	}
 
-	sleng_debug("Stop dth_config_server...\n");
+	if (pthread_create(&tid_tcp, NULL, _dth_config_tcp_body, (void *)&tcp_args) == -1)
+	{
+		sleng_error("pthread_create for _tcp_body error");
+		tid_tcp = -1;
+	}
+
 	if (tid_udp > 0) {
 		pthread_join(tid_udp, &thread_ret);
 		printf("%s thread return %s\n", "udp_thread", thread_ret? "failure": "success");
 	}
+	if (tid_tcp > 0) {
+		pthread_join(tid_tcp, &thread_ret);
+		printf("%s thread return %s\n", "tcp_thread", thread_ret? "failure": "success");
+	}
+
+	sleng_debug("Stop dth_config_server...\n");
 	return ret;
 }

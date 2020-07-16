@@ -791,12 +791,12 @@ static int _cp(const char *src, const char *dst) {
 	return ret;
 }
 
-static int _dth_config_tcp_listen_fd_setup(unsigned int ipaddr, unsigned short port, struct timeval *timeout)
+static int _dth_config_tcp_listen_fd_setup(unsigned int ipaddr, unsigned short port, int maxch, struct timeval *timeout)
 {
 	int ret = 0;
 	int listenfd = 0;
 	int opt = 1;
-	struct timeval tv = {2, 0};
+	struct timeval tv = {5, 0};
 	struct sockaddr_in servaddr;
 
 	do
@@ -834,7 +834,7 @@ static int _dth_config_tcp_listen_fd_setup(unsigned int ipaddr, unsigned short p
 			break;
 		}
 
-		if (listen(listenfd, 10) < 0) {
+		if (listen(listenfd, maxch) < 0) {
 			sleng_error("listen");
 			ret = -1;
 		}
@@ -912,12 +912,12 @@ struct file_trans_args {
 #define DOWNLOAD_DIR "/disthen/download"
 #define BACKUP_DIR "/disthen/backup"
 
-static void *file_trans_thread_func(void *args) {
+static void *_file_trans_server(void *args) {
 	PSTATIC_FD fd = &static_fd;
 	struct file_trans_args *trans_args = (struct file_trans_args *)args;
 	int ret = 0;
 	// int process_flag = 0;
-	dth_head_t *dth_head = (dth_head_t *)trans_args->sendbuf;
+	dth_head_t *send_head = (dth_head_t *)trans_args->sendbuf;
 	char x_flag = 0;
 	unsigned long long trans_count = 0;
 	unsigned int file_size = get_file_size(trans_args->up_head->remote_path);
@@ -930,19 +930,19 @@ static void *file_trans_thread_func(void *args) {
 	pthread_detach(pthread_self());
 
 	do {
-		dth_head->sync[0] = 'd';
-		dth_head->sync[1] = 't';
-		dth_head->sync[2] = 'h';
-		dth_head->sync[3] = '\0';
-		dth_head->type    = DTH_ACK_FILE_TRANS;
-		dth_head->length  = 0;
-		dth_head->res[0]  = DTH_CONFIG_ACK_VALUE_OK;
+		send_head->sync[0] = 'd';
+		send_head->sync[1] = 't';
+		send_head->sync[2] = 'h';
+		send_head->sync[3] = '\0';
+		send_head->type    = DTH_ACK_FILE_TRANS;
+		send_head->length  = 0;
+		send_head->res[0]  = DTH_CONFIG_ACK_VALUE_OK;
 
 		if (access(DOWNLOAD_DIR, F_OK)) {
 			sleng_debug("make download dir[%s]...", DOWNLOAD_DIR);
 			if (mkdir(DOWNLOAD_DIR, 0755)) {
 				sleng_debug("failed! %s\n", strerror(errno));
-				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+				send_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 				break;
 			}
 			sleng_debug("OK!\n");
@@ -951,7 +951,7 @@ static void *file_trans_thread_func(void *args) {
 			sleng_debug("make backup dir[%s]...", BACKUP_DIR);
 			if (mkdir(BACKUP_DIR, 0755)) {
 				sleng_debug("failed! %s\n", strerror(errno));
-				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+				send_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 				break;
 			}
 			sleng_debug("OK!\n");
@@ -980,17 +980,20 @@ static void *file_trans_thread_func(void *args) {
 			int listen_fd = -1;
 			struct timeval recv_timeout = {5, 0};
 			struct sockaddr_in address;
-			int val = 1;
+			// int val = 1;
 			int client_fd = -1;
 			socklen_t addr_len = sizeof(struct sockaddr_in);
-			int recvlen = -1, writelen = -1;
+			int recvlen = -1, writelen = -1, leftlen = 0;
 			FILE *fp = NULL;
 			unsigned char *recvbuf = NULL;
+			int recvbuf_size = sizeof(dth_head_t) + DTH_CONFIG_SERVER_RECVBUF_SIZE;
 			// int rcvbuf_resize = 8192;
 			char back_path[128] = {0, };
 			char tmp_path[128] = {0, };
 			unsigned char local_md5[16] = {0, };
 			struct in_addr addr;
+			dth_head_t *recv_head = NULL;
+			unsigned char *payload = NULL;
 
 			do {
 				if (trans_args->up_head->backup_flag)
@@ -1003,7 +1006,7 @@ static void *file_trans_thread_func(void *args) {
 				}
 
 				if (trans_args->up_head->trans_protocol == FILE_TRANS_PROTOCOL_USER) {
-					recvbuf = (unsigned char *)malloc(DTH_CONFIG_SERVER_RECVBUF_SIZE);
+					recvbuf = (unsigned char *)malloc(recvbuf_size);
 					if (recvbuf == NULL)
 					{
 						sleng_error("malloc for file recv buf failed");
@@ -1011,43 +1014,16 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
-					if((listen_fd = socket(AF_INET,SOCK_STREAM,0)) == -1){
+					// if((listen_fd = socket(AF_INET,SOCK_STREAM,0)) == -1){
+					if((listen_fd = _dth_config_tcp_listen_fd_setup(0, DTH_CONFIG_FILE_TRANFER_TCP_PORT, 1, NULL)) == -1)
+					{
 						ret = -1;
 						break;
 					}
 
-					memset(&address, 0, sizeof(struct sockaddr_in));
-					address.sin_family = AF_INET;
-					address.sin_addr.s_addr = htonl(INADDR_ANY);
-					address.sin_port = htons(DTH_CONFIG_FILE_TRANFER_TCP_PORT);
-
-					if (setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, (char*)&recv_timeout, sizeof(struct timeval)) < 0) {
-						sleng_error("setsockopt timeout failed");
-						ret = -1;
-						break;
-					}
-
-					if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0 ) {
-						sleng_error("set setsockopt failed");
-						ret = -1;
-						break;
-					}
-
-					if (-1 == bind(listen_fd, (struct sockaddr *)&address, sizeof(address))) {
-						sleng_error("bind failed");
-						ret = -1;
-						break;
-					}
-
-					if (listen(listen_fd, 1) < 0) {
-						sleng_error("listen failed");
-						ret = -1;
-						break;
-					}
-
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
+					send_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
 					pthread_mutex_lock(trans_args->mutex);
-					ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+					ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t) + send_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
 						sleng_error("send file_trans ready ack failed");
 					}
@@ -1061,7 +1037,7 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
-					if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, (char*)&recv_timeout, sizeof(struct timeval)) < 0) {
+					if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, (void *)&recv_timeout, sizeof(struct timeval)) < 0) {
 						sleng_error("setsockopt timeout failed");
 						ret = -1;
 						break;
@@ -1089,20 +1065,66 @@ static void *file_trans_thread_func(void *args) {
 					fflush(stdout);
 					gettimeofday(&tv_begin, NULL);
 
+					recv_head = (dth_head_t *)recvbuf;
+					payload = recvbuf + sizeof(dth_head_t);
 					do {
-						recvlen = recv(client_fd, recvbuf, DTH_CONFIG_SERVER_RECVBUF_SIZE, 0);
-						writelen = fwrite(recvbuf, 1, recvlen, fp);
-						if (writelen < recvlen)
+						recvlen = recv(client_fd, recvbuf, recvbuf_size, 0);
+						if (recvlen < sizeof(dth_head_t) || recv_head->length > recvlen - sizeof(dth_head_t))
 						{
-							sleng_error("fwrite error, writelen(%d) != recvlen(%d)", writelen, recvlen);
+							sleng_error("recv error, recvlen(%d) sizeof(head)(%d) recv_head->len(%u)", recvlen, sizeof(dth_head_t), recv_head->length);
 							ret = -1;
 							break;
 						}
-						// sleng_debug("recvlen=%d, writelen=%d, trans_count=%llu\n", recvlen, writelen, trans_count);
-						trans_count += recvlen;
-						printf("\b\b\b\b%3llu%%", trans_count * 100 / file_size);
+
+						if (recv_head->sync[0] != 'd' || recv_head->sync[1] != 't' || recv_head->sync[2] != 'h' || recv_head->sync[3] != '\0'
+							|| (recv_head->type != DTH_FILE_PUT && recv_head->type != DTH_FILE_EOF))
+						{
+							sleng_error("sync(%c%c%c%c) mismatch or invalid type(%d)", recv_head->sync[0], recv_head->sync[1], recv_head->sync[2], recv_head->sync[3], recv_head->type);
+							ret = -1;
+							break;
+						}
+
+						if (recv_head->type == DTH_FILE_EOF)
+						{
+							break;
+						}
+
+						writelen = fwrite(payload, 1, recv_head->length, fp);
+						if (writelen < recv_head->length)
+						{
+							sleng_error("fwrite error, writelen(%d) != recv_head->length(%u)", writelen, recv_head->length);
+							ret = -1;
+							break;
+						}
+						// sleng_debug("recv_head->length=%u, writelen=%d, trans_count=%llu, file_size=%u\n", recv_head->length, writelen, trans_count, trans_args->up_head->file_size);
+						trans_count += recv_head->length;
+						// printf("\b\b\b\b%3llu%%", trans_count * 100 / trans_args->up_head->file_size);
+						printf("\r%s: %3llu%%", base_name, trans_count * 100 / trans_args->up_head->file_size);
 						fflush(stdout);
+
+						leftlen = recvlen - sizeof(dth_head_t) - recv_head->length;
+						if (leftlen == sizeof(dth_head_t)
+							&& recvbuf[sizeof(dth_head_t) + recv_head->length + 0] == 'd'
+							&& recvbuf[sizeof(dth_head_t) + recv_head->length + 1] == 't'
+							&& recvbuf[sizeof(dth_head_t) + recv_head->length + 2] == 'h'
+							&& recvbuf[sizeof(dth_head_t) + recv_head->length + 3] == '\0'
+							&& recvbuf[sizeof(dth_head_t) + recv_head->length + 4] == DTH_FILE_EOF)
+						{
+							break;
+						}
+
 					} while(recvlen > 0);
+#if 0
+					// pthread_mutex_lock(trans_args->mutex);
+					ret = send(client_fd, trans_args->sendbuf, sizeof(dth_head_t) + send_head->length, 0);
+					sleng_debug("send return %d\n", ret);
+					print_in_hex(trans_args->sendbuf, ret, "reply done ack", NULL);
+					if (ret < 0)
+					{
+						sleng_error("send file_trans done ack failed");
+					}
+					// pthread_mutex_unlock(trans_args->mutex);
+#endif
 					gettimeofday(&tv_end, NULL);
 					tv_diff_usecs = TIMEVAL_DIFF_USEC(&tv_end, &tv_begin);
 					speed_stat = trans_count * 1000000 / tv_diff_usecs;
@@ -1133,13 +1155,13 @@ static void *file_trans_thread_func(void *args) {
 							trans_args->up_head->remote_path,
 							inet_ntoa(addr));
 					} else {
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
+						send_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
 						break;
 					}
 					ret = system(cmd);
 					sleng_debug("Tftp for [%s], cmd=%s, ret=%d\n", trans_args->up_head->remote_path, cmd, ret);
 					if(ret) {
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
+						send_head->res[0] = DTH_CONFIG_ACK_VALUE_POSITIVE_DOWNLOAD_FIALED;
 						break;
 					}
 				}
@@ -1149,7 +1171,7 @@ static void *file_trans_thread_func(void *args) {
 				if (get_file_size(tmp_path) != trans_args->up_head->file_size)
 				{
 					sleng_error("File size check error, local_file(%s:%u) != param(%u)", tmp_path, get_file_size(tmp_path), trans_args->up_head->file_size);
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+					send_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 					break;
 				}
 				sleng_debug("File size check success, local_file(%u) == param(%u)\n", get_file_size(tmp_path), trans_args->up_head->file_size);
@@ -1171,7 +1193,7 @@ static void *file_trans_thread_func(void *args) {
 						fp = popen(cmd, "r");
 						if (fp == NULL) {
 							sleng_error("popen md5sum failed");
-							dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+							send_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 							break;
 						}
 						fread(buf, 1, sizeof(buf), fp);
@@ -1188,7 +1210,7 @@ static void *file_trans_thread_func(void *args) {
 					}
 					if (buf[i] != ' ') {
 						sleng_debug("local md5sum format error\n");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+						send_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 						break;
 					}
 #endif
@@ -1204,7 +1226,7 @@ static void *file_trans_thread_func(void *args) {
 						sleng_debug("md5 check success!\n");
 					} else {
 						sleng_debug("md5 check failed!\n");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
+						send_head->res[0] = DTH_CONFIG_ACK_VALUE_MD5_CHECK_FAILED;
 						break;
 					}
 				}
@@ -1220,7 +1242,7 @@ static void *file_trans_thread_func(void *args) {
 					{
 						if (_cp(trans_args->up_head->remote_path, back_path)) {
 							sleng_error("cp1, %s -> %s", trans_args->up_head->remote_path, back_path);
-							// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+							// send_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 							// break;
 						}
 						x_flag = !access(trans_args->up_head->remote_path, X_OK);
@@ -1231,13 +1253,13 @@ static void *file_trans_thread_func(void *args) {
 					/* Copy the new file */
 					if (_cp(tmp_path, trans_args->up_head->remote_path)) {
 						sleng_error("cp2, %s -> %s", tmp_path, trans_args->up_head->remote_path);
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+						send_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 						break;
 					}
 					if (x_flag) chmod(trans_args->up_head->remote_path, 0755);
 					if (unlink(tmp_path)) {
 						sleng_error("unlink");
-						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
+						send_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_FILE_FAILED;
 						break;
 					}
 				}
@@ -1251,9 +1273,19 @@ static void *file_trans_thread_func(void *args) {
 					sleng_debug("Resume the upgraded process[%s], cmd=%s, ret=%d\n", trans_args->up_head->remote_path, cmd, ret);
 				}
 #endif
-				dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
+				send_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 			} while(0);
 
+#if 1
+			pthread_mutex_lock(trans_args->mutex);
+			ret = send(client_fd, trans_args->sendbuf, sizeof(dth_head_t) + send_head->length, 0);
+			// print_in_hex(trans_args->sendbuf, ret, "reply done ack", NULL);
+			if (ret < 0)
+			{
+				sleng_error("send file_trans done ack failed");
+			}
+			pthread_mutex_unlock(trans_args->mutex);
+#endif
 			if (fp)
 			{
 				fclose(fp);
@@ -1335,9 +1367,9 @@ static void *file_trans_thread_func(void *args) {
 						break;
 					}
 
-					dth_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
+					send_head->res[0] = DTH_CONFIG_ACK_VALUE_READY;
 					pthread_mutex_lock(trans_args->mutex);
-					ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+					ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t) + send_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
 					if (ret < 0) {
 						sleng_error("sendto self_report ack failed");
 					}
@@ -1451,20 +1483,20 @@ static void *file_trans_thread_func(void *args) {
 		}
 
 		default :
-			dth_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
+			send_head->res[0] = DTH_CONFIG_ACK_VALUE_NOT_SUPPORT;
 			break;
 		}
 
 	} while (0);
 
 	//send back file trans result
-	pthread_mutex_lock(trans_args->mutex);
-	ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
-	if (ret < 0) {
-		sleng_error("send self_report ack failed");
-	}
-	pthread_mutex_unlock(trans_args->mutex);
-	sleng_debug("Upgrade [%s] %s!\n", trans_args->up_head->local_path, (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
+	// pthread_mutex_lock(trans_args->mutex);
+	// ret = _dth_config_send_msg(trans_args->protocol, trans_args->send_sock, trans_args->sendbuf, sizeof(dth_head_t) + send_head->length, 0, (struct sockaddr *)&trans_args->remote_addr, sizeof(struct sockaddr));
+	// if (ret < 0) {
+	// 	sleng_error("send done ack failed");
+	// }
+	// pthread_mutex_unlock(trans_args->mutex);
+	// sleng_debug("Upgrade [%s] %s!\n", trans_args->up_head->local_path, (send_head->res[0] == DTH_CONFIG_ACK_VALUE_OK)? "Success": "Failure");
 
 	return (void *)ret;
 }
@@ -1483,7 +1515,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 		{
 			dth_head_t *dth_head = (dth_head_t *)recvbuf;
 			if (fd->debug_flag)
-				sleng_debug("recvfrom [ip=%08x, port=%hu]\n", (unsigned int)remote_addr->sin_addr.s_addr, ntohs(remote_addr->sin_port));
+				sleng_debug("recv from [ip=%08x, port=%hu]\n", (unsigned int)remote_addr->sin_addr.s_addr, ntohs(remote_addr->sin_port));
 			if (dth_head->sync[0] != 'd' || dth_head->sync[1] != 't' || dth_head->sync[2] != 'h' || dth_head->sync[3] != '\0')
 			{
 				// if(fd->debug_flag) sleng_debug("bad sync, just drop! dth ... ... ... ...\n");
@@ -1504,7 +1536,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 				sleng_debug("Restart Service");
 				dth_head->res[0] = system("service dmservice restart");
 				pthread_mutex_lock(send_mutex);
-				ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+				ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
 				if (ret < 0)
 				{
 					sleng_error("sendto self_report ack failed");
@@ -1524,7 +1556,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 				dth_head->length = 0;
 				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 				pthread_mutex_lock(send_mutex);
-				ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+				ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
 				if (ret < 0)
 				{
 					sleng_error("sendto self_report ack failed");
@@ -1546,7 +1578,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 				dth_head->length = 0;
 				// dth_head->res[0] = DTH_CONFIG_ACK_VALUE_OK;
 				pthread_mutex_lock(send_mutex);
-				ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+				ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
 				if (ret < 0)
 				{
 					sleng_error("sendto self_report ack failed");
@@ -1641,7 +1673,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 						print_in_hex(sendbuf, sizeof(dth_head_t), "1.sendbuf0=", NULL);
 
 					pthread_mutex_lock(send_mutex);
-					ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+					ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
 					if (ret < 0)
 					{
 						sleng_error("sendto self_report ack failed");
@@ -1672,7 +1704,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 					trans_args.remote_addr = *remote_addr;
 					trans_args.protocol    = prot;
 					trans_args.sem_ready   = &sem_ready;
-					if (pthread_create(&file_trans_tid, NULL, file_trans_thread_func, &trans_args) < 0)
+					if (pthread_create(&file_trans_tid, NULL, _file_trans_server, &trans_args) < 0)
 					{
 						sleng_error("create file_trans_thread failed");
 						dth_head = (dth_head_t *)sendbuf;
@@ -1684,7 +1716,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 						dth_head->length = 0;
 						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_CREATE_THREAD_FAILED;
 						pthread_mutex_lock(send_mutex);
-						ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+						ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
 						if (ret < 0)
 						{
 							sleng_error("sendto self_report ack failed");
@@ -1692,6 +1724,23 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 						pthread_mutex_unlock(send_mutex);
 					}
 					sem_wait(&sem_ready);
+#if 0
+					memset(sendbuf, 0, sizeof(sendbuf)); //Clean the sendbuf in order to make sure client can parse to string in python
+					dth_head = (dth_head_t *)sendbuf;
+					dth_head->sync[0] = 'd';
+					dth_head->sync[1] = 't';
+					dth_head->sync[2] = 'h';
+					dth_head->sync[3] = '\0';
+					dth_head->type    = DTH_ACK_FILE_TRANS;
+					dth_head->res[0]  = DTH_CONFIG_ACK_VALUE_FILE_TRANS_STARTED;
+					pthread_mutex_lock(send_mutex);
+					ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t), 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
+					if (ret < 0)
+					{
+						sleng_error("sendto self_report ack failed");
+					}
+					pthread_mutex_unlock(send_mutex);
+#endif
 				}
 				break;
 			}
@@ -1715,7 +1764,7 @@ static int _dth_config_do_request(int prot, int sockfd, const unsigned char *rec
 						dth_head->res[0] = DTH_CONFIG_ACK_VALUE_ERR;
 					}
 					pthread_mutex_lock(send_mutex);
-					ret = _dth_config_send_msg(SOCK_DGRAM, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));;
+					ret = _dth_config_send_msg(prot, sockfd, sendbuf, sizeof(dth_head_t) + dth_head->length, 0, (struct sockaddr *)remote_addr, sizeof(struct sockaddr));
 					if (ret < 0)
 					{
 						sleng_error("sendto self_report ack failed");
@@ -1854,7 +1903,7 @@ static void *_dth_config_tcp_body(void *arg)
 	{
 		/* Listen fd setup */
 		// if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-		if ((listenfd = _dth_config_tcp_listen_fd_setup(ipaddr, port, NULL)) == -1) {
+		if ((listenfd = _dth_config_tcp_listen_fd_setup(ipaddr, port, 10, NULL)) == -1) {
 			sleng_error("setup listen fd error");
 			rc = THREAD_FAILURE;
 			break;

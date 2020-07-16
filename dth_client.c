@@ -16,16 +16,18 @@
 
 #define	DTH_CONFIG_CLIENT_SENDBUF_SIZE	2048
 #define	DTH_CONFIG_CLIENT_RECVBUF_SIZE	2048
+#define	DTH_CONFIG_CLIENT_FILEBUF_SIZE	4096
 
 
 typedef struct static_file_desc
 {
 	int quit_flag : 1;
 	int debug_flag : 1;
-	int use_tcp : 1;
+	// int use_tcp : 1;
+	int prot;
 } STATIC_FD, *PSTATIC_FD;
 
-STATIC_FD static_fd = {0};
+STATIC_FD static_fd = {0, 0, SOCK_DGRAM};
 
 
 #if 0
@@ -87,7 +89,7 @@ static int _dth_config_tcp_connect(uint32_t src_ip, uint16_t src_port, uint32_t 
 {
 	int ret = 0;
 	int connfd = 0;
-	struct timeval tv = {2, 0};
+	struct timeval tv = {5, 0};
 	int opt = 1;
 	struct sockaddr_in client_addr, server_addr;
 
@@ -362,9 +364,9 @@ unsigned int get_local_ip(const char *ifname) {
 	return ret;
 }
 
-static int _file_transfer(const char *path, const unsigned int dst_ip, const unsigned short dest_port)
+static int _file_trans_client(const char *path, const unsigned int dst_ip, const unsigned short dst_port)
 {
-	PSTATIC_FD fd = &static_fd;
+	// PSTATIC_FD fd = &static_fd;
 	int ret = 0;
 	FILE *fp = NULL;
 	int client_socket = -1;
@@ -378,6 +380,8 @@ static int _file_transfer(const char *path, const unsigned int dst_ip, const uns
 	struct timeval tv_begin, tv_end;
 	unsigned long long tv_diff_usecs = 0;
 	double speed_stat = 0.0;
+	dth_head_t *dth_head = NULL;
+	unsigned char *read_ptr = NULL;
 
 	do {
 		if (path == NULL)
@@ -387,7 +391,7 @@ static int _file_transfer(const char *path, const unsigned int dst_ip, const uns
 			break;
 		}
 
-		sendbuf = (unsigned char *)malloc(4096);
+		sendbuf = (unsigned char *)malloc(sizeof(dth_head_t) + DTH_CONFIG_CLIENT_FILEBUF_SIZE);
 		if (sendbuf == NULL)
 		{
 			sleng_error("malloc for sendbuf for file transfer error");
@@ -395,6 +399,16 @@ static int _file_transfer(const char *path, const unsigned int dst_ip, const uns
 			break;
 		}
 
+#if 0
+		// client_socket = socket(AF_INET, SOCK_STREAM, 0);
+		client_socket = _dth_config_tcp_connect(0, 0, dst_ip, dst_port, NULL);
+		if (client_socket < 0)
+		{
+			sleng_error("Create Socket Failed!");
+			ret = -1;
+			break;
+		}
+#else
 		client_socket = socket(AF_INET, SOCK_STREAM, 0);
 		if (client_socket < 0)
 		{
@@ -418,14 +432,15 @@ static int _file_transfer(const char *path, const unsigned int dst_ip, const uns
 		bzero(&server_addr, sizeof(server_addr));
 		server_addr.sin_family = AF_INET;
 		server_addr.sin_addr.s_addr = dst_ip;
-		server_addr.sin_port = htons(dest_port);
+		server_addr.sin_port = htons(dst_port);
 		if ((ret = connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
 		{
-			sleng_error("Can Not Connect To %x : %hu!", server_addr.sin_addr.s_addr, dest_port);
+			sleng_error("Can Not Connect To %x : %hu!", server_addr.sin_addr.s_addr, dst_port);
 			ret = -1;
 			break;
 		}
 
+#endif
 		fp = fopen(path, "r");
 		if (fp == NULL)
 		{
@@ -436,32 +451,72 @@ static int _file_transfer(const char *path, const unsigned int dst_ip, const uns
 
 		for (i = strlen(path); i > 0 && path[i] != '/'; i--)
 			;
-		base_name = path + i + 1;
+		base_name = path + i;
 
+		dth_head = (dth_head_t *)sendbuf;
+		dth_head->sync[0] = 'd';
+		dth_head->sync[1] = 't';
+		dth_head->sync[2] = 'h';
+		dth_head->sync[3] = '\0';
+		dth_head->type    = DTH_FILE_PUT;
+		read_ptr = sendbuf + sizeof(dth_head_t);
 		printf("%s: %3d%%", base_name, 0);
 		fflush(stdout);
 		gettimeofday(&tv_begin, NULL);
 		while (!feof(fp))
 		{
-			readlen = fread(sendbuf, 1, 4096, fp);
+			readlen = fread(read_ptr, 1, 4096, fp);
 			if (readlen == -1)
 			{
 				sleng_error("fread from send file[%s] error", path);
 				ret = -1;
 				break;
 			}
-			sendlen = send(client_socket, sendbuf, readlen, 0);
-			if (sendlen < readlen)
+			dth_head->length  = readlen;
+			sendlen = send(client_socket, sendbuf, sizeof(dth_head_t) + dth_head->length, 0);
+			// sleng_debug("sendlen=%d\n", sendlen);
+			if (sendlen < sizeof(dth_head_t) + dth_head->length)
 			{
-				sleng_error("send error, sendlen(%d) != readlen(%d)", sendlen, readlen);
+				sleng_error("send error, sendlen(%d) != sizeof(dth_head_t)(%zu) + dth_head->length(%u)", sendlen, sizeof(dth_head_t), dth_head->length);
 				ret = -1;
 				break;
 			}
-			send_total += sendlen;
-			if (fd->debug_flag) sleng_debug("sendlen=%d, read_len=%d, send_total=%llu(%llu), file_size=%u\n", sendlen, readlen, send_total, send_total * 100, file_size);
-			printf("\b\b\b\b%3llu%%", send_total * 100 / file_size);
+			send_total += dth_head->length;
+			// if (fd->debug_flag) sleng_debug("dth_head->length=%u, read_len=%d, send_total=%llu(%llu), file_size=%u\n", dth_head->length, readlen, send_total, send_total * 100, file_size);
+			// printf("\b\b\b\b%3llu%%", send_total * 100 / file_size);
+			printf("\r%s: %3llu%%", base_name, send_total * 100 / file_size);
 			fflush(stdout);
 		}
+		dth_head->type   = DTH_FILE_EOF;
+		dth_head->length = 0;
+		if (send(client_socket, sendbuf, sizeof(dth_head_t), 0) != sizeof(dth_head_t))
+		{
+			sleng_error("send file trans eof error");
+			ret = -1;
+			break;
+		}
+
+#if 0
+		printf("\n");
+		sendlen = recv(client_socket, sendbuf, 4096, 0);
+		if (sendlen == sizeof(dth_head_t))
+		{
+			dth_head_t *dth_head = (dth_head_t *)sendbuf;
+			if (dth_head->sync[0] == 'd' && dth_head->sync[1] == 't' && dth_head->sync[2] == 'h' && dth_head->sync[3] == '\0' && dth_head->type == DTH_ACK_FILE_TRANS)
+			{
+				sleng_debug("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
+			}
+			else
+			{
+				sleng_debug("Invalid sync head or type\n");
+			}
+		}
+		else
+		{
+			sleng_error("recv(%d) error", sendlen);
+		}
+		print_in_hex(sendbuf, sendlen, "Wait for done", NULL);
+#endif
 		gettimeofday(&tv_end, NULL);
 		tv_diff_usecs = TIMEVAL_DIFF_USEC(&tv_end, &tv_begin);
 		speed_stat = send_total * 1000000 / tv_diff_usecs;
@@ -476,6 +531,27 @@ static int _file_transfer(const char *path, const unsigned int dst_ip, const uns
 			printf("  %llu  %.0f B/s\n", send_total, speed_stat);
 		}
 	} while(0);
+#if 1
+	// recvlen = _dth_config_recv_msg(fd->prot, client_socket, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+	sendlen = recv(client_socket, sendbuf, 4096, 0);
+	if (sendlen == sizeof(dth_head_t))
+	{
+		dth_head_t *dth_head = (dth_head_t *)sendbuf;
+		if (dth_head->sync[0] == 'd' && dth_head->sync[1] == 't' && dth_head->sync[2] == 'h' && dth_head->sync[3] == '\0' && dth_head->type == DTH_ACK_FILE_TRANS)
+		{
+			sleng_debug("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
+		}
+		else
+		{
+			sleng_debug("Invalid sync head or type\n");
+		}
+	}
+	else
+	{
+		sleng_error("recv(%d) error", sendlen);
+	}
+	// print_in_hex(sendbuf, sendlen, "Wait for done", NULL);
+#endif
 
 	if (fp)
 	{
@@ -700,7 +776,8 @@ int main(int argc, char const *argv[])
 		}
 		case 't' :
 		{
-			fd->use_tcp = 1;
+			// fd->use_tcp = 1;
+			fd->prot = SOCK_STREAM;
 		}
 		case LONG_OPT_VAL_NO_BACKUP : {
 			uphead.backup_flag = 0;
@@ -712,7 +789,7 @@ int main(int argc, char const *argv[])
 		}
 	} while (1);
 
-	if (fd->use_tcp)
+	if (fd->prot == SOCK_STREAM)
 	{
 		dst_port = DTH_CONFIG_BOARD_DEFAULT_TCP_PORT;
 		ucst_sockfd = _dth_config_tcp_connect(0, 0, dst_ip, dst_port, NULL);
@@ -733,7 +810,7 @@ int main(int argc, char const *argv[])
 		struct sockaddr_in bcst_addr;
 		int bcst_sockfd = -1;
 		do {
-			if (fd->use_tcp)
+			if (fd->prot == SOCK_STREAM)
 			{
 				sleng_warning("ip scan not support tcp\n");
 				break;
@@ -759,7 +836,7 @@ int main(int argc, char const *argv[])
 				int i;
 				dth_head_t *dth_head = (dth_head_t *)recvbuf;
 				network_params_t *param = NULL;
-				recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 				if (recvlen <= 0) {
 					break;
 				}
@@ -804,7 +881,7 @@ int main(int argc, char const *argv[])
 
 			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg(fd->prot, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
@@ -815,7 +892,7 @@ int main(int argc, char const *argv[])
 				sleng_error("setsockopt timeout");
 			}
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;
@@ -848,14 +925,14 @@ int main(int argc, char const *argv[])
 
 			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg(fd->prot, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;
@@ -884,14 +961,14 @@ int main(int argc, char const *argv[])
 
 			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg(fd->prot, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;
@@ -928,7 +1005,7 @@ int main(int argc, char const *argv[])
 
 			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg(fd->prot, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
@@ -937,28 +1014,31 @@ int main(int argc, char const *argv[])
 			/* Transfer file to board via custom tcp protocol */
 			if (uphead.trans_mode == FILE_TRANS_MODE_R2L_NEGATIVE && uphead.trans_protocol == FILE_TRANS_PROTOCOL_USER)
 			{
-				recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+				// print_in_hex(recvbuf, recvlen, "Wait for ready", NULL);
 				dth_head = (dth_head_t *)recvbuf;
 				if (dth_head->res[0] == DTH_CONFIG_ACK_VALUE_READY)
 				{
-					_file_transfer(uphead.local_path, dst_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
+					_file_trans_client(uphead.local_path, dst_ip, DTH_CONFIG_FILE_TRANFER_TCP_PORT);
 				}
 			}
-
+#if 0
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			print_in_hex(recvbuf, recvlen, "Wait for started", NULL);
 			if (recvlen <= 0) {
 				sleng_error("_dth_config_recv_msg, recvlen(%d)", recvlen);
 				break;
 			}
 			// print_in_hex(recvbuf, sizeof(dth_head_t)+sizeof(network_params_t)*8, NULL, NULL);
-			sleng_debug("recvfrom [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
+			sleng_debug("recv from [ip=%08x, src_port=%hu]\n", (unsigned int)remote_addr.sin_addr.s_addr, ntohs(remote_addr.sin_port));
 			if (dth_head->sync[0]!='d' || dth_head->sync[1]!='t' || dth_head->sync[2]!='h' || dth_head->sync[3]!='\0' || dth_head->type != DTH_ACK_FILE_TRANS) {
 				sleng_debug("Invalid sync head or type\n");
 				break;
 			} else {
-				sleng_debug("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Success", dth_head->res[0]);
+				sleng_debug("Upgrade %s! Return %hhd\n", dth_head->res[0]? "Failed": "Started", dth_head->res[0] == DTH_CONFIG_ACK_VALUE_FILE_TRANS_STARTED);
 			}
+#endif
 		}while (0);
 	}
 
@@ -994,14 +1074,14 @@ int main(int argc, char const *argv[])
 			}
 			remote_addr.sin_addr.s_addr = dst_ip;
 			remote_addr.sin_port = htons(dst_port);
-			sendlen = _dth_config_send_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
+			sendlen = _dth_config_send_msg(fd->prot, ucst_sockfd, sendbuf, sizeof(dth_head_t)+dth_head->length, 0, (struct sockaddr *)&remote_addr, remote_addr_len);
 			if (sendlen <= 0) {
 				sleng_error("sendto");
 				break;
 			}
 
 			dth_head = (dth_head_t *)recvbuf;
-			recvlen = _dth_config_recv_msg((fd->use_tcp)? SOCK_STREAM: SOCK_DGRAM, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
+			recvlen = _dth_config_recv_msg(fd->prot, ucst_sockfd, recvbuf, DTH_CONFIG_CLIENT_RECVBUF_SIZE, 0, (struct sockaddr *)&remote_addr, &remote_addr_len);
 			if (recvlen <= 0) {
 				sleng_error("recvfrom");
 				break;

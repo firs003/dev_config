@@ -370,7 +370,7 @@ static int _file_trans_client(const char *path, const unsigned int dst_ip, const
 	int ret = 0;
 	FILE *fp = NULL;
 	int client_socket = -1;
-	struct sockaddr_in client_addr, server_addr;
+	// struct sockaddr_in client_addr, server_addr;
 	unsigned char *sendbuf = NULL;
 	int sendlen, readlen;
 	unsigned long long send_total = 0;
@@ -399,7 +399,7 @@ static int _file_trans_client(const char *path, const unsigned int dst_ip, const
 			break;
 		}
 
-#if 0
+#if 1
 		// client_socket = socket(AF_INET, SOCK_STREAM, 0);
 		client_socket = _dth_config_tcp_connect(0, 0, dst_ip, dst_port, NULL);
 		if (client_socket < 0)

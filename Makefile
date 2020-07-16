@@ -26,7 +26,7 @@ pc:$(PC_TARGET)
 $(ARM_TARGET):$(ARM_OBJS)
 	$(ARM_COMPILER_PRE)$(CC) $(CFLAGS) -o $@ $^ -pthread $(LDFLAGS) -lutil_arm
 	$(ARM_COMPILER_PRE)$(STRIP) $@
-	@cp $@ $(SHARE_DIR)
+	@cp $@ $(SHARE_DIR)/dth_config_server
 	@echo "cp $@ to share_dir"
 
 $(ARM_OBJS):dth_config_server.c inc/dth_config.h

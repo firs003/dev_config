@@ -1,4 +1,5 @@
 ARM_COMPILER_PRE=arm-linux-gnueabihf-
+# ARM_COMPILER_PRE=arm-linux-gnueabi-
 MIPS_COMPILER_PRE=mipsel-openwrt-linux-
 X86_COMPILER_PRE=
 CC=gcc

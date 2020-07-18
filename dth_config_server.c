@@ -920,7 +920,7 @@ static void *_file_trans_server(void *args) {
 	dth_head_t *send_head = (dth_head_t *)trans_args->sendbuf;
 	char x_flag = 0;
 	unsigned long long trans_count = 0;
-	unsigned int file_size = get_file_size(trans_args->up_head->remote_path);
+	// unsigned int file_size = get_file_size(trans_args->up_head->remote_path);
 	const char *base_name = NULL;
 	int i;
 	struct timeval tv_begin, tv_end;
@@ -1068,10 +1068,12 @@ static void *_file_trans_server(void *args) {
 					recv_head = (dth_head_t *)recvbuf;
 					payload = recvbuf + sizeof(dth_head_t);
 					do {
-						recvlen = recv(client_fd, recvbuf, recvbuf_size, 0);
-						if (recvlen < sizeof(dth_head_t) || recv_head->length > recvlen - sizeof(dth_head_t))
+						// recvlen = recv(client_fd, recvbuf, recvbuf_size, 0);
+						// if (recvlen < sizeof(dth_head_t) || recv_head->length > recvlen - sizeof(dth_head_t))
+						recvlen = recv(client_fd, recv_head, sizeof(dth_head_t), MSG_WAITALL);
+						if (recvlen < sizeof(dth_head_t))
 						{
-							sleng_error("recv error, recvlen(%d) sizeof(head)(%d) recv_head->len(%u)", recvlen, sizeof(dth_head_t), recv_head->length);
+							sleng_error("recv error, recvlen(%d) < sizeof(head)(%d)", recvlen, sizeof(dth_head_t));
 							ret = -1;
 							break;
 						}
@@ -1086,6 +1088,14 @@ static void *_file_trans_server(void *args) {
 
 						if (recv_head->type == DTH_FILE_EOF)
 						{
+							break;
+						}
+
+						recvlen = recv(client_fd, payload, recv_head->length, MSG_WAITALL);
+						if (recvlen < recv_head->length)
+						{
+							sleng_error("recv error, recvlen(%d) < recv_head->len(%u)", recvlen, recv_head->length);
+							ret = -1;
 							break;
 						}
 
@@ -1429,7 +1439,7 @@ static void *_file_trans_server(void *args) {
 						// sleng_debug("sendlen=%d, read_len=%d\n", sendlen, readlen);
 						trans_count += sendlen;
 						// sleng_debug("sendlen=%d, read_len=%d, trans_count=%d(%d), file_size=%u\n", sendlen, readlen, trans_count, trans_count * 100, file_size);
-						printf("\b\b\b\b%3llu%%", trans_count * 100 / file_size);
+						printf("\r%s: %3llu%%", base_name, trans_count * 100 / trans_args->up_head->file_size);
 						fflush(stdout);
 					}
 					gettimeofday(&tv_end, NULL);
